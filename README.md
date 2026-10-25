@@ -5,7 +5,9 @@ made with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) static recom
 
 This repository contains no game data. To build or play you need your own copy of
 the game as a disc image: *Tom Clancy's Ghost Recon - Advanced Warfighter (USA, Europe)
-(En,Fr,De,Es,It)*, the Redump dump of disc US-2005.
+(En,Fr,De,Es,It)*, disc US-2005. Any full dump of that disc works; the build script and
+the launcher check its two executables (`default.xex` and `Yeti_Final_Xenon.exe`) by SHA-1,
+so other versions and regions are rejected with a clear message.
 
 ## What's here
 
@@ -60,6 +62,6 @@ Settings are saved to `~/.config/graw/graw.toml`; saves and the shader cache go 
 
 ## Playing
 
-* The launcher picks the disc image (checked against Redump), the save folder, and display and shader options.
+* The launcher picks the disc image (its executables are checked against the supported release, which takes a second), the save folder, and display and shader options.
 * In game, open the menu with **Guide**, **Back + Start** or **F6**. Use the D-pad or stick to move, **A** to select and **B** to go back.
 * The training level can be skipped from the game's own pause menu (Start, then *Skip the training*).

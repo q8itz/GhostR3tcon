@@ -4,12 +4,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <rex/ui/imgui_dialog.h>
+
+#include "graw_disc.h"
 
 struct ImFont;
 
@@ -20,8 +21,8 @@ struct LaunchChoice {
   std::filesystem::path save_dir;
 };
 
-// Front-end shown before the runtime starts: disc selection with Redump
-// verification, save folder, and display options.
+// Front-end shown before the runtime starts: disc selection with a check of
+// its executables, save folder, and display options.
 class LauncherDialog final : public rex::ui::ImGuiDialog {
  public:
   LauncherDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font, std::filesystem::path config_path,
@@ -34,7 +35,7 @@ class LauncherDialog final : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  enum class DiscState { kNone, kMissing, kWrongSize, kHashing, kVerified, kMismatch, kError };
+  enum class DiscState { kNone, kMissing, kChecking, kVerified, kMismatch, kError };
   enum class BrowseMode { kDisc, kSaveFolder };
   struct BrowseEntry {
     std::string name;
@@ -42,10 +43,8 @@ class LauncherDialog final : public rex::ui::ImGuiDialog {
   };
 
   void SelectDisc(std::filesystem::path disc);
-  void StartVerify(bool use_cache);
+  void StartVerify();
   void StopVerify();
-  void HashWorker(std::filesystem::path disc, uint64_t size, int64_t mtime);
-  std::filesystem::path VerifyCachePath() const;
 
   void OpenBrowser(BrowseMode mode);
   void BrowseTo(std::filesystem::path dir);
@@ -66,13 +65,8 @@ class LauncherDialog final : public rex::ui::ImGuiDialog {
   bool allow_unverified_ = false;
 
   std::thread worker_;
-  std::atomic<bool> cancel_{false};
   std::atomic<bool> worker_done_{false};
-  std::atomic<uint64_t> hashed_bytes_{0};
-  uint64_t disc_size_ = 0;
-  std::mutex result_mutex_;
-  std::string worker_sha1_;
-  std::string worker_error_;
+  DiscCheck worker_result_;
 
   std::filesystem::path save_dir_;
   std::filesystem::path initial_save_dir_;

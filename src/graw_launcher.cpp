@@ -1,13 +1,8 @@
 #include "graw_launcher.h"
 
-#include <fcntl.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstdlib>
-#include <fstream>
 
 #include <imgui.h>
 
@@ -15,7 +10,6 @@
 #include <rex/string.h>
 
 #include "graw_settings.h"
-#include "sha1.h"
 
 namespace graw {
 
@@ -69,12 +63,6 @@ std::string FormatBytes(uint64_t bytes) {
   return text;
 }
 
-int64_t ModifiedTime(const std::filesystem::path& path) {
-  std::error_code ec;
-  auto time = std::filesystem::last_write_time(path, ec);
-  return ec ? 0 : int64_t(time.time_since_epoch().count());
-}
-
 bool HasSaveData(const std::filesystem::path& dir) {
   std::error_code ec;
   return std::filesystem::is_directory(dir / kTitleId, ec);
@@ -109,10 +97,6 @@ LauncherDialog::~LauncherDialog() {
   StopVerify();
 }
 
-std::filesystem::path LauncherDialog::VerifyCachePath() const {
-  return config_path_.parent_path() / "graw_disc_verified.txt";
-}
-
 void LauncherDialog::SelectDisc(std::filesystem::path disc) {
   StopVerify();
   allow_unverified_ = false;
@@ -130,92 +114,27 @@ void LauncherDialog::SelectDisc(std::filesystem::path disc) {
     disc_message_ = "File not found.";
     return;
   }
-  disc_size_ = std::filesystem::file_size(disc_, ec);
-  if (ec || disc_size_ != kDiscSize) {
-    disc_state_ = DiscState::kWrongSize;
-    disc_message_ = "This file is " + std::to_string(disc_size_) +
-                    " bytes. The Redump image of GRAW (USA, Europe) is 7834892288 bytes.";
-    return;
-  }
-  StartVerify(true);
+  StartVerify();
 }
 
-void LauncherDialog::StartVerify(bool use_cache) {
+void LauncherDialog::StartVerify() {
   StopVerify();
-  int64_t mtime = ModifiedTime(disc_);
-
-  if (use_cache) {
-    std::ifstream cache(VerifyCachePath());
-    uint64_t size = 0;
-    int64_t cached_mtime = 0;
-    std::string sha1, path;
-    if (cache >> size >> cached_mtime >> sha1 && std::getline(cache >> std::ws, path) &&
-        path == disc_.string() && size == disc_size_ && cached_mtime == mtime &&
-        sha1 == kDiscSha1) {
-      disc_state_ = DiscState::kVerified;
-      disc_message_ = "Matches Redump (checked earlier, file unchanged since).";
-      return;
-    }
-  }
-
-  disc_state_ = DiscState::kHashing;
+  disc_state_ = DiscState::kChecking;
   disc_message_.clear();
-  hashed_bytes_ = 0;
   worker_done_ = false;
-  cancel_ = false;
-  worker_ = std::thread(&LauncherDialog::HashWorker, this, disc_, disc_size_, mtime);
+  worker_ = std::thread([this, disc = disc_] {
+    worker_result_ = CheckDisc(disc);
+    worker_done_ = true;
+  });
 }
 
 void LauncherDialog::StopVerify() {
-  cancel_ = true;
   if (worker_.joinable()) {
     worker_.join();
   }
-  cancel_ = false;
-  if (disc_state_ == DiscState::kHashing) {
+  if (disc_state_ == DiscState::kChecking) {
     disc_state_ = DiscState::kNone;
   }
-}
-
-void LauncherDialog::HashWorker(std::filesystem::path disc, uint64_t size, int64_t mtime) {
-  std::string error;
-  std::string digest;
-  int fd = ::open(disc.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) {
-    error = "Could not open the file.";
-  } else {
-    ::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-    std::vector<uint8_t> buffer(8 << 20);
-    Sha1 sha1;
-    for (;;) {
-      if (cancel_) {
-        break;
-      }
-      ssize_t n = ::read(fd, buffer.data(), buffer.size());
-      if (n < 0) {
-        error = "Read error while hashing.";
-        break;
-      }
-      if (n == 0) {
-        digest = Sha1::ToHex(sha1.Finish());
-        break;
-      }
-      sha1.Update(buffer.data(), size_t(n));
-      hashed_bytes_ += uint64_t(n);
-    }
-    ::close(fd);
-  }
-
-  if (digest == kDiscSha1) {
-    std::ofstream cache(VerifyCachePath(), std::ios::trunc);
-    cache << size << ' ' << mtime << ' ' << digest << '\n' << disc.string() << '\n';
-  }
-  {
-    std::lock_guard lock(result_mutex_);
-    worker_sha1_ = digest;
-    worker_error_ = error;
-  }
-  worker_done_ = true;
 }
 
 void LauncherDialog::OpenBrowser(BrowseMode mode) {
@@ -419,18 +338,19 @@ void LauncherDialog::DrawDiscSection() {
     OpenBrowser(BrowseMode::kDisc);
   }
 
-  if (disc_state_ == DiscState::kHashing && worker_done_) {
+  if (disc_state_ == DiscState::kChecking && worker_done_) {
     worker_.join();
-    std::lock_guard lock(result_mutex_);
-    if (!worker_error_.empty()) {
-      disc_state_ = DiscState::kError;
-      disc_message_ = worker_error_;
-    } else if (worker_sha1_ == kDiscSha1) {
-      disc_state_ = DiscState::kVerified;
-      disc_message_ = "Matches Redump. SHA-1 " + worker_sha1_;
-    } else {
-      disc_state_ = DiscState::kMismatch;
-      disc_message_ = "SHA-1 " + worker_sha1_ + " does not match Redump (" + kDiscSha1 + ").";
+    disc_message_ = worker_result_.message;
+    switch (worker_result_.result) {
+      case DiscCheck::Result::kMatch:
+        disc_state_ = DiscState::kVerified;
+        break;
+      case DiscCheck::Result::kMismatch:
+        disc_state_ = DiscState::kMismatch;
+        break;
+      case DiscCheck::Result::kError:
+        disc_state_ = DiscState::kError;
+        break;
     }
   }
 
@@ -438,19 +358,21 @@ void LauncherDialog::DrawDiscSection() {
     case DiscState::kNone:
       ImGui::TextDisabled("Choose the Ghost Recon Advanced Warfighter (USA, Europe) disc image.");
       break;
-    case DiscState::kHashing: {
-      float fraction = disc_size_ ? float(double(hashed_bytes_) / double(disc_size_)) : 0.0f;
-      char overlay[64];
-      std::snprintf(overlay, sizeof(overlay), "Verifying disc... %d%%", int(fraction * 100.0f));
-      ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
+    case DiscState::kChecking:
+      ImGui::TextDisabled("Checking the disc...");
       break;
-    }
     case DiscState::kVerified:
       ImGui::TextColored(kGood, "Verified: %s", disc_message_.c_str());
       break;
-    case DiscState::kMissing:
-    case DiscState::kWrongSize:
     case DiscState::kMismatch:
+      ImGui::PushTextWrapPos(0.0f);
+      ImGui::TextColored(kBad, "Wrong version: %s", disc_message_.c_str());
+      ImGui::TextWrapped(
+          "This build only runs Ghost Recon Advanced Warfighter (USA, Europe), disc US-2005. "
+          "Other versions and regions have different code and will not work.");
+      ImGui::PopTextWrapPos();
+      break;
+    case DiscState::kMissing:
     case DiscState::kError:
       ImGui::PushTextWrapPos(0.0f);
       ImGui::TextColored(kBad, "Not verified: %s", disc_message_.c_str());
@@ -458,14 +380,12 @@ void LauncherDialog::DrawDiscSection() {
       break;
   }
 
-  if (disc_state_ == DiscState::kVerified || disc_state_ == DiscState::kMismatch ||
-      disc_state_ == DiscState::kError) {
-    if (ImGui::SmallButton("Verify again")) {
-      StartVerify(false);
+  if (disc_state_ == DiscState::kMismatch || disc_state_ == DiscState::kError) {
+    if (ImGui::SmallButton("Check again")) {
+      StartVerify();
     }
   }
-  if (disc_state_ == DiscState::kWrongSize || disc_state_ == DiscState::kMismatch ||
-      disc_state_ == DiscState::kError) {
+  if (disc_state_ == DiscState::kError) {
     ImGui::Checkbox("Start anyway with this unverified image", &allow_unverified_);
   }
 }
@@ -605,8 +525,7 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   ImGui::Separator();
   ImGui::SetCursorPosX(column_x);
   const bool can_play = disc_state_ == DiscState::kVerified ||
-                        (allow_unverified_ && disc_state_ != DiscState::kHashing &&
-                         disc_state_ != DiscState::kMissing && disc_state_ != DiscState::kNone);
+                        (allow_unverified_ && disc_state_ == DiscState::kError);
   ImGui::BeginDisabled(!can_play);
   if (ImGui::Button("Play", button)) {
     Play();
@@ -617,7 +536,7 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
     StopVerify();
     on_quit_();
   }
-  if (!can_play && disc_state_ != DiscState::kHashing) {
+  if (!can_play && disc_state_ != DiscState::kChecking) {
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Play is available once the disc is verified.");

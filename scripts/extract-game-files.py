@@ -4,7 +4,8 @@
     scripts/extract-game-files.py "Ghost Recon Advanced Warfighter.iso"
 
 Writes assets/default.xex and assets/Yeti_Final_Xenon.exe. Both are checked
-against the Redump release (USA, Europe), the one the hints were made for.
+against the USA/Europe release (disc US-2005), the one the hints were made for.
+Keep FILES in sync with kDiscFiles in src/graw_disc.h.
 The assets folder is git-ignored and never leaves your machine.
 """
 import hashlib

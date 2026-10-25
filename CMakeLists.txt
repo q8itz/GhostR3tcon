@@ -14,6 +14,7 @@ include(generated/rexglue.cmake)
 set(GRAW_SOURCES
     src/main.cpp
     src/graw_app.cpp
+    src/graw_disc.cpp
     src/graw_launcher.cpp
     src/graw_menu.cpp
     src/graw_settings.cpp
