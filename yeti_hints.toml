@@ -1,0 +1,32 @@
+# Branch targets the scanner did not treat as entries. Each is an
+# unconditional branch from live code and is not inside any function.
+# 0x820FC6D0 and 0x821063E0 are function pointers the campaign calls
+# (startup, then the new-game storage check).
+[functions]
+"0x820FC6D0" = {}
+"0x821063E0" = {}
+"0x82390A50" = {}
+"0x82390A60" = {}
+"0x823E2F78" = {}
+"0x823E3328" = {}
+# Called during the mission and previously returned without running. The
+# tail at 0x823E2F90 belongs to 0x823D3A10.
+"0x82101140" = {}
+"0x82103658" = {}
+"0x822C43D8" = {}
+"0x823D3A10" = {}
+"0x823E2F90" = {}
+
+# HUD sprite blend modes in sub_821B8FF8. The bctr at 0x821B91DC indexes this
+# table with r7 (the signed blend-mode byte). Codegen switched on r8, which is
+# 0 here, so every sprite took SrcAlpha/InvSrcAlpha and the frame painted black.
+[[switch_tables]]
+address = 0x821B91DC
+register = 7
+labels = [
+  0x821B924C, 0x821B9248, 0x821B9258, 0x821B9264, 0x821B9274, 0x821B9284,
+  0x821B9280, 0x821B9290, 0x821B92A4, 0x821B92A0, 0x821B92B0, 0x821B92C4,
+  0x821B92C0, 0x821B92D0, 0x821B92E4, 0x821B92E0, 0x821B92F0, 0x821B9300,
+  0x821B930C, 0x821B9318, 0x821B9324, 0x821B9330, 0x821B924C, 0x821B924C,
+  0x821B924C, 0x821B924C,
+]

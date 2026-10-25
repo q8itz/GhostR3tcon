@@ -1,0 +1,14 @@
+# Guest init table has one pointer codegen did not treat as an entry.
+# 0x825C6000 is a leaf comparator passed by lis/addi. It has no direct call.
+# 0x820DAF80 and 0x820DA3A8 are vtable thunks with no direct call.
+[functions]
+"0x820DA3A8" = {}
+"0x820DAF80" = {}
+"0x825C6000" = {}
+"0x827AE040" = {}
+"0x82589048" = {}
+"0x821472B8" = {}
+"0x82145AA0" = {}
+"0x82151A00" = {}
+"0x82400780" = {}
+"0x82416BE0" = {}
