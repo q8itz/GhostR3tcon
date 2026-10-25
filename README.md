@@ -3,11 +3,19 @@
 A native Linux and Windows build of **Tom Clancy's Ghost Recon Advanced Warfighter** (Xbox 360),
 made with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) static recompiler.
 
-This repository contains no game data. To build or play you need your own copy of
+This is a passion project and was built entirely through AI (Grok and Claude).
+
+** Multi-player is not contained in this release. The game entry-point is the single player segment only.
+
+This repository contains no game data. It is your responsibility to dump the game from your own physical copy. To build or play you need your own copy of
 the game as a disc image: *Tom Clancy's Ghost Recon - Advanced Warfighter (USA, Europe)
 (En,Fr,De,Es,It)*, disc US-2005. Any full dump of that disc works; the build script and
 the launcher check its two executables (`default.xex` and `Yeti_Final_Xenon.exe`) by SHA-1,
 so other versions and regions are rejected with a clear message.
+
+Known Issues:
+- Higher resolutions introduce texture issues in certain circumstances
+- Higher than default FPS + higher than default resolutions can cause stutter
 
 ## What's here
 
