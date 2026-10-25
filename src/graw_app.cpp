@@ -134,7 +134,9 @@ void GrawApp::ToggleMenu() {
           menu_open_ = false;
         });
       },
-      [this] { app_context().CallInUIThreadDeferred([this] { app_context().QuitFromUIThread(); }); });
+      // Closing the window takes the title shutdown path; QuitFromUIThread
+      // alone would leave the running title's threads blocking teardown.
+      [this] { app_context().CallInUIThreadDeferred([this] { window()->RequestClose(); }); });
   menu_open_ = true;
 }
 
