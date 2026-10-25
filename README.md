@@ -64,4 +64,10 @@ Settings are saved to `~/.config/graw/graw.toml`; saves and the shader cache go 
 
 * The launcher picks the disc image (its executables are checked against the supported release, which takes a second), the save folder, and display and shader options.
 * In game, open the menu with **Guide**, **Back + Start** or **F6**. Use the D-pad or stick to move, **A** to select and **B** to go back.
+* Performance: the game holds 60 FPS at the native 1280x720 render resolution, but struggles
+  at higher ones. Emulating the Xbox 360's graphics chip adds a large fixed GPU cost to every
+  frame, and the extra pixels of 2x and above push it over the 60 FPS budget, even on a
+  GeForce RTX 4070 Super. For a smooth 60 FPS, use *Render resolution: 1280 x 720 (original)*
+  and let the output filter (FSR or CAS) scale it to the window, or play at 30 FPS for higher
+  render resolutions.
 * The training level can be skipped from the game's own pause menu (Start, then *Skip the training*).

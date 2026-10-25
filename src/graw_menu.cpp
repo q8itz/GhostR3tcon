@@ -154,6 +154,7 @@ void MenuDialog::FeedPad(ImGuiIO& io, const PadWatcher::State& pad) {
 }
 
 void MenuDialog::OnDraw(ImGuiIO& io) {
+  LimitDialogFrameRate();
   PadWatcher::State pad = pad_ ? pad_->Get() : PadWatcher::State{};
   if (closing_) {
     if (!pad.buttons && !closed_) {

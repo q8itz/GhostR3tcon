@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -151,6 +153,18 @@ void NextLaunchNote(bool in_game) {
 }
 
 }  // namespace
+
+void LimitDialogFrameRate() {
+  using Clock = std::chrono::steady_clock;
+  constexpr auto kInterval = std::chrono::microseconds(1000000 / 60);
+  static Clock::time_point next;
+  Clock::time_point now = Clock::now();
+  if (next > now) {
+    std::this_thread::sleep_until(next);
+    now = next;
+  }
+  next = now + kInterval;
+}
 
 void ApplyFrameRate() {
   if (rex::cvar::GetFlagSource("video_mode_refresh_rate") == rex::cvar::Source::kCommandLine) {

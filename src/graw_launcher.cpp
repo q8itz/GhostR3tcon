@@ -469,6 +469,7 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   if (launched_) {
     return;
   }
+  LimitDialogFrameRate();
   const ImGuiViewport* viewport = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(viewport->Pos);
   ImGui::SetNextWindowSize(viewport->Size);

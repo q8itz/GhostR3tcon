@@ -19,6 +19,11 @@ inline constexpr const char* kTitleId = "555307D5";
 // was given on the command line. Applies live: the vblank timer follows it.
 void ApplyFrameRate();
 
+// Call once per frame from a full-screen dialog. While any dialog exists the
+// window repaints continuously, and the presenter doesn't wait for vsync, so
+// without this a static menu redraws thousands of times a second.
+void LimitDialogFrameRate();
+
 // Resizes the window to graw_window_size when it is not fullscreen.
 void ApplyWindowSize();
 
