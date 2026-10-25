@@ -4,6 +4,7 @@
 #include <array>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -37,7 +38,8 @@ namespace {
 constexpr std::array kSavedSettings = {
     "game_data_root",   "user_data_root",       "show_launcher", "boot_to_campaign",
     "graw_60fps",       "graw_window_size",     "fullscreen",    "resolution_scale",
-    "anisotropic_override", "present_effect",
+    "anisotropic_override", "present_effect", "present_cas_additional_sharpness",
+    "present_fsr_sharpness_reduction", "swap_post_effect",
 };
 
 struct Choice {
@@ -46,8 +48,12 @@ struct Choice {
 };
 
 constexpr Choice kWindowSizes[] = {
-    {"1280x720", "1280 x 720"},   {"1600x900", "1600 x 900"},   {"1920x1080", "1920 x 1080"},
-    {"2560x1440", "2560 x 1440"}, {"3840x2160", "3840 x 2160"},
+    {"1280x720", "1280 x 720"},
+    {"1280x800", "1280 x 800 (Steam Deck)"},
+    {"1600x900", "1600 x 900"},
+    {"1920x1080", "1920 x 1080"},
+    {"2560x1440", "2560 x 1440"},
+    {"3840x2160", "3840 x 2160"},
 };
 
 constexpr Choice kRenderScales[] = {
@@ -55,6 +61,20 @@ constexpr Choice kRenderScales[] = {
     {"2", "2560 x 1440 (2x)"},
     {"3", "3840 x 2160 (3x)"},
     {"4", "5120 x 2880 (4x)"},
+};
+
+constexpr Choice kAntiAliasing[] = {
+    {"none", "Off"},
+    {"fxaa", "FXAA"},
+    {"fxaa_extreme", "FXAA (strong)"},
+};
+
+constexpr Choice kOutputFilters[] = {
+    {"bilinear", "Bilinear"},
+    {"cas", "AMD FidelityFX CAS"},
+    {"fsr", "AMD FidelityFX FSR 1"},
+    {"fsr2", "AMD FidelityFX FSR 2 (experimental)"},
+    {"fsr3", "AMD FidelityFX FSR 3 (experimental)"},
 };
 
 constexpr Choice kAnisotropy[] = {
@@ -256,25 +276,48 @@ void DrawDisplayOptions(bool in_game) {
   ImGui::SetNextItemWidth(combo_width);
   CvarCombo("Texture filtering", "anisotropic_override", kAnisotropy, std::size(kAnisotropy));
 
-  const auto* effect = FindEntry("present_effect");
-  if (effect) {
-    const auto& options = effect->constraints.allowed_values;
-    std::string current = effect->getter();
-    ImGui::BeginDisabled(options.size() <= 1);
-    ImGui::SetNextItemWidth(combo_width);
-    if (ImGui::BeginCombo("Output filter", current.c_str())) {
-      for (const auto& option : options) {
-        if (ImGui::Selectable(option.c_str(), option == current)) {
-          rex::cvar::SetFlagByName("present_effect", option);
-        }
+  ImGui::SetNextItemWidth(combo_width);
+  CvarCombo("Anti-aliasing", "swap_post_effect", kAntiAliasing, std::size(kAntiAliasing));
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("FXAA smooths jagged edges in the final image. It costs very\n"
+                      "little, but softens fine detail slightly.");
+  }
+
+  // Only the filters this SDK build was compiled with are offered.
+  std::vector<Choice> filters;
+  if (const auto* effect = FindEntry("present_effect")) {
+    for (const Choice& choice : kOutputFilters) {
+      const auto& allowed = effect->constraints.allowed_values;
+      if (std::find(allowed.begin(), allowed.end(), choice.value) != allowed.end()) {
+        filters.push_back(choice);
       }
-      ImGui::EndCombo();
     }
-    ImGui::EndDisabled();
-    if (options.size() <= 1 && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("CAS and FSR sharpening need an SDK built with FidelityFX.");
+  }
+  ImGui::SetNextItemWidth(combo_width);
+  CvarCombo("Output filter", "present_effect", filters.data(), filters.size());
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "How the rendered image is scaled to the window.\n"
+        "Bilinear: plain smooth scaling.\n"
+        "CAS: contrast adaptive sharpening, restores detail lost to scaling.\n"
+        "FSR 1: edge-preserving upscaling plus sharpening. Best when the\n"
+        "render resolution is below the window size.");
+  }
+
+  std::string filter = rex::cvar::GetFlagByName("present_effect");
+  if (filter == "cas" || filter == "fsr") {
+    // CAS adds sharpness from 0; FSR's RCAS takes a reduction in stops from
+    // full sharpness. Both are shown as one 0-100% scale.
+    bool is_cas = filter == "cas";
+    const char* cvar =
+        is_cas ? "present_cas_additional_sharpness" : "present_fsr_sharpness_reduction";
+    float value = std::stof(rex::cvar::GetFlagByName(cvar));
+    float percent = is_cas ? value * 100.0f : (1.0f - value / 2.0f) * 100.0f;
+    ImGui::SetNextItemWidth(combo_width);
+    if (ImGui::SliderFloat("Sharpness", &percent, 0.0f, 100.0f, "%.0f%%")) {
+      float new_value = is_cas ? percent / 100.0f : (1.0f - percent / 100.0f) * 2.0f;
+      rex::cvar::SetFlagByName(cvar, std::to_string(new_value));
     }
-    NextLaunchNote(in_game);
   }
 }
 
