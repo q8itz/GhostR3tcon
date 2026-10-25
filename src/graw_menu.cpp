@@ -120,11 +120,13 @@ bool SDLCALL PadWatcher::Watch(void* user, SDL_Event* event) {
 }
 
 MenuDialog::MenuDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font,
-                       std::filesystem::path config_path, const PadWatcher* pad,
+                       std::filesystem::path config_path, std::filesystem::path cache_root,
+                       const PadWatcher* pad,
                        std::function<void()> on_close, std::function<void()> on_quit)
     : ImGuiDialog(drawer),
       font_(font),
       config_path_(std::move(config_path)),
+      cache_root_(std::move(cache_root)),
       pad_(pad),
       on_close_(std::move(on_close)),
       on_quit_(std::move(on_quit)) {
@@ -221,6 +223,12 @@ void MenuDialog::OnDraw(ImGuiIO& io) {
 
     ImGui::Separator();
     DrawDisplayOptions(true);
+    ImGui::Separator();
+    DrawShaderOptions(cache_root_, true);
+    bool show_launcher = REXCVAR_GET(show_launcher);
+    if (ImGui::Checkbox("Show launcher at startup", &show_launcher)) {
+      rex::cvar::SetFlagByName("show_launcher", show_launcher ? "true" : "false");
+    }
     ImGui::Separator();
     ImGui::TextDisabled("Guide or Back+Start: menu    A: select    B: back");
     ImGui::TextDisabled("The game keeps running while the menu is open.");

@@ -86,6 +86,7 @@ LauncherDialog::LauncherDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font,
                                std::filesystem::path config_path, std::filesystem::path disc,
                                std::filesystem::path save_dir,
                                std::filesystem::path default_save_dir,
+                               std::filesystem::path cache_root,
                                std::function<void(LaunchChoice)> on_play,
                                std::function<void()> on_quit)
     : ImGuiDialog(drawer),
@@ -95,7 +96,8 @@ LauncherDialog::LauncherDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font,
       on_quit_(std::move(on_quit)),
       save_dir_(std::move(save_dir)),
       initial_save_dir_(save_dir_),
-      default_save_dir_(std::move(default_save_dir)) {
+      default_save_dir_(std::move(default_save_dir)),
+      cache_root_(std::move(cache_root)) {
   CopyToBuffer(save_buf_, sizeof(save_buf_), save_dir_);
   GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   if (!disc.empty()) {
@@ -580,6 +582,9 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   ImGui::SeparatorText("Display");
   DrawDisplayOptions(false);
   ImGui::Dummy(ImVec2(0, font_size * 0.4f));
+  ImGui::SeparatorText("Shaders");
+  DrawShaderOptions(cache_root_, false);
+  ImGui::Dummy(ImVec2(0, font_size * 0.4f));
   ImGui::SeparatorText("Startup");
   bool campaign = REXCVAR_GET(boot_to_campaign);
   if (ImGui::Checkbox("Go straight to Single Player", &campaign)) {
@@ -591,7 +596,7 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   }
   if (!show) {
     ImGui::SameLine();
-    ImGui::TextDisabled("(start with --show_launcher to bring it back)");
+    ImGui::TextDisabled("(turn it back on from the in-game menu)");
   }
 
   DrawBrowser();

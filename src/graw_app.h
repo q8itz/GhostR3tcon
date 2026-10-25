@@ -37,6 +37,7 @@ class GrawApp : public rex::ReXApp {
 
   ImFont* ui_font_ = nullptr;
   std::filesystem::path config_path_;
+  std::filesystem::path cache_root_;
   std::unique_ptr<graw::LauncherDialog> launcher_;
   std::unique_ptr<graw::PadWatcher> pad_watcher_;
   std::unique_ptr<graw::MenuDialog> menu_;

@@ -39,7 +39,7 @@ constexpr std::array kSavedSettings = {
     "game_data_root",   "user_data_root",       "show_launcher", "boot_to_campaign",
     "graw_60fps",       "graw_window_size",     "fullscreen",    "resolution_scale",
     "anisotropic_override", "present_effect", "present_cas_additional_sharpness",
-    "present_fsr_sharpness_reduction", "swap_post_effect",
+    "present_fsr_sharpness_reduction", "swap_post_effect", "vulkan_async_pipelines",
 };
 
 struct Choice {
@@ -317,6 +317,55 @@ void DrawDisplayOptions(bool in_game) {
     if (ImGui::SliderFloat("Sharpness", &percent, 0.0f, 100.0f, "%.0f%%")) {
       float new_value = is_cas ? percent / 100.0f : (1.0f - percent / 100.0f) * 2.0f;
       rex::cvar::SetFlagByName(cvar, std::to_string(new_value));
+    }
+  }
+}
+
+void DrawShaderOptions(const std::filesystem::path& cache_root, bool in_game) {
+  const float combo_width = ImGui::GetFontSize() * 14.0f;
+
+  int mode = rex::cvar::GetFlagByName("vulkan_async_pipelines") == "true" ? 1 : 0;
+  ImGui::SetNextItemWidth(combo_width);
+  if (ImGui::Combo("Shader compilation", &mode,
+                   "When first drawn (original)\0In the background (smoother)\0")) {
+    rex::cvar::SetFlagByName("vulkan_async_pipelines", mode ? "true" : "false");
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        "When first drawn: the game pauses briefly the first time it uses a new\n"
+        "shader, so that frame is complete.\n"
+        "In the background: new shaders compile on other CPU cores and the game\n"
+        "keeps running. The effect or object appears a few frames late instead.");
+  }
+
+  std::error_code ec;
+  const std::filesystem::path shaders = cache_root / "shaders";
+  uintmax_t stored = 0;
+  for (const char* name : {"555307D5.fbo.vk.xpso", "555307D5.fsi.vk.xpso"}) {
+    uintmax_t size = std::filesystem::file_size(shaders / "shareable" / name, ec);
+    if (!ec) {
+      stored += size;
+    }
+  }
+  if (stored > 12) {
+    ImGui::TextDisabled("Saved shaders are pre-compiled at startup (%.0f KB cache).",
+                        double(stored) / 1024.0);
+  } else {
+    ImGui::TextDisabled("No saved shaders yet. Shaders are saved as the game first\n"
+                        "uses them and are pre-compiled at every startup after that.");
+  }
+
+  if (!in_game) {
+    static std::string status;
+    ImGui::BeginDisabled(stored <= 12);
+    if (ImGui::Button("Clear shader cache")) {
+      std::filesystem::remove_all(shaders, ec);
+      status = ec ? "Could not clear: " + ec.message() : "Shader cache cleared.";
+    }
+    ImGui::EndDisabled();
+    if (!status.empty()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", status.c_str());
     }
   }
 }

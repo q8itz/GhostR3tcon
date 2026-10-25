@@ -34,4 +34,8 @@ void SaveSettings(const std::filesystem::path& config_path);
 // options overlay. Restart-only settings are disabled when `in_game`.
 void DrawDisplayOptions(bool in_game);
 
+// Shader compilation mode and the state of the saved shader cache under
+// `cache_root`. Clearing the cache is only offered before the game starts.
+void DrawShaderOptions(const std::filesystem::path& cache_root, bool in_game);
+
 }  // namespace graw

@@ -26,7 +26,7 @@ class LauncherDialog final : public rex::ui::ImGuiDialog {
  public:
   LauncherDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font, std::filesystem::path config_path,
                  std::filesystem::path disc, std::filesystem::path save_dir,
-                 std::filesystem::path default_save_dir,
+                 std::filesystem::path default_save_dir, std::filesystem::path cache_root,
                  std::function<void(LaunchChoice)> on_play, std::function<void()> on_quit);
   ~LauncherDialog() override;
 
@@ -77,6 +77,7 @@ class LauncherDialog final : public rex::ui::ImGuiDialog {
   std::filesystem::path save_dir_;
   std::filesystem::path initial_save_dir_;
   std::filesystem::path default_save_dir_;
+  std::filesystem::path cache_root_;
   char save_buf_[1024] = {};
   bool copy_saves_ = true;
 

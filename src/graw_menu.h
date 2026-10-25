@@ -47,7 +47,7 @@ class PadWatcher {
 class MenuDialog final : public rex::ui::ImGuiDialog {
  public:
   MenuDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font, std::filesystem::path config_path,
-             const PadWatcher* pad, std::function<void()> on_close,
+             std::filesystem::path cache_root, const PadWatcher* pad, std::function<void()> on_close,
              std::function<void()> on_quit);
 
   // Hides the menu, and closes it once no pad button is held so the button
@@ -62,6 +62,7 @@ class MenuDialog final : public rex::ui::ImGuiDialog {
 
   ImFont* font_;
   std::filesystem::path config_path_;
+  std::filesystem::path cache_root_;
   const PadWatcher* pad_;
   std::function<void()> on_close_;
   std::function<void()> on_quit_;

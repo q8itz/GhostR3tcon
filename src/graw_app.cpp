@@ -76,6 +76,7 @@ void GrawApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
 std::optional<rex::PathConfig> GrawApp::OnFinalizePaths(
     const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) {
   config_path_ = defaults.config_path;
+  cache_root_ = defaults.cache_root;
   graw::ApplyWindowSize();
 
   // The defaults are resolved before the config file loads; pick up the
@@ -96,7 +97,7 @@ std::optional<rex::PathConfig> GrawApp::OnFinalizePaths(
 
   launcher_ = std::make_unique<graw::LauncherDialog>(
       imgui_drawer(), ui_font_, config_path_, paths.game_data_root, paths.user_data_root,
-      rex::filesystem::GetUserFolder() / "graw",
+      rex::filesystem::GetUserFolder() / "graw", cache_root_,
       [this, paths, resume](graw::LaunchChoice choice) mutable {
         paths.game_data_root = choice.disc;
         paths.user_data_root = choice.save_dir;
@@ -126,7 +127,7 @@ void GrawApp::ToggleMenu() {
     return;
   }
   menu_ = std::make_unique<graw::MenuDialog>(
-      imgui_drawer(), ui_font_, config_path_, pad_watcher_.get(),
+      imgui_drawer(), ui_font_, config_path_, cache_root_, pad_watcher_.get(),
       [this] {
         app_context().CallInUIThreadDeferred([this] {
           menu_.reset();
