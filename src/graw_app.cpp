@@ -31,10 +31,16 @@ REXCVAR_DECLARE(std::string, user_data_root);
 void GrawApp::OnConfigurePaths([[maybe_unused]] rex::PathConfig& paths) {
 #ifndef _WIN32
   // Inside an AppImage (or any read-only install) the executable's folder
-  // can't hold the config, so it moves to the XDG config directory.
+  // can't hold the config or the logs, so they move to the XDG config
+  // directory and the user data folder.
   std::filesystem::path exe_dir = paths.config_path.parent_path();
   if (access(exe_dir.c_str(), W_OK) == 0) {
     return;
+  }
+  std::error_code ec;
+  if (REXCVAR_GET(log_file).empty() && !paths.user_data_root.empty()) {
+    std::filesystem::create_directories(paths.user_data_root / "logs", ec);
+    rex::cvar::SetFlagByName("log_file", (paths.user_data_root / "logs" / "graw.log").string());
   }
   std::filesystem::path config_home;
   if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
@@ -44,7 +50,6 @@ void GrawApp::OnConfigurePaths([[maybe_unused]] rex::PathConfig& paths) {
   } else {
     return;
   }
-  std::error_code ec;
   std::filesystem::create_directories(config_home / "graw", ec);
   paths.config_path = config_home / "graw" / paths.config_path.filename();
 #endif
