@@ -3,7 +3,12 @@
 #include "graw_app.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <string>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #include <imgui.h>
 
@@ -23,7 +28,33 @@
 REXCVAR_DECLARE(std::string, game_data_root);
 REXCVAR_DECLARE(std::string, user_data_root);
 
-void GrawApp::OnPreSetup(rex::RuntimeConfig&) {
+void GrawApp::OnConfigurePaths([[maybe_unused]] rex::PathConfig& paths) {
+#ifndef _WIN32
+  // Inside an AppImage (or any read-only install) the executable's folder
+  // can't hold the config, so it moves to the XDG config directory.
+  std::filesystem::path exe_dir = paths.config_path.parent_path();
+  if (access(exe_dir.c_str(), W_OK) == 0) {
+    return;
+  }
+  std::filesystem::path config_home;
+  if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
+    config_home = xdg;
+  } else if (const char* home = std::getenv("HOME"); home && *home) {
+    config_home = std::filesystem::path(home) / ".config";
+  } else {
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(config_home / "graw", ec);
+  paths.config_path = config_home / "graw" / paths.config_path.filename();
+#endif
+}
+
+void GrawApp::OnPreSetup(rex::RuntimeConfig& config) {
+  // The game only runs with the Xenos GPU emulation.
+  if (config.gpu_plugin.empty()) {
+    config.gpu_plugin = "xenos";
+  }
   graw::ApplyFrameRate();
   rex::cvar::RegisterChangeCallback("graw_60fps",
                                     [](std::string_view, std::string_view) {

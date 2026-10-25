@@ -1,2 +1,21 @@
+# Build output and code generated from the game executables.
 out/
-generated/
+generated/*
+!generated/rexglue.cmake
+
+# Game files. Nothing taken from the disc is ever committed.
+/assets
+*.iso
+*.xex
+*.exe
+*.big
+*.str
+*.bik
+
+# SDK checkout made by scripts/setup-sdk.sh.
+sdk/rexglue-sdk/
+
+# Packaging output.
+packaging/AppDir/
+packaging/.cache/
+*.AppImage

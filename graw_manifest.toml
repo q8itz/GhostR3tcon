@@ -3,15 +3,15 @@
 [project]
 name = "graw"
 sdk_version = "0.10.0"
-game_root = "../assets"
+game_root = "assets"
 
 [entrypoint]
-file_path = "../assets/default.xex"
+file_path = "assets/default.xex"
 out_directory_path = "generated/default"
 includes = ["graw_hints.toml"]
 
 [[modules]]
 guest_path = "Yeti_Final_Xenon.exe"
-file_path = "../assets/Yeti_Final_Xenon.exe"
+file_path = "assets/Yeti_Final_Xenon.exe"
 out_directory_path = "generated/yeti"
 includes = ["yeti_hints.toml"]

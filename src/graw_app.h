@@ -23,6 +23,7 @@ class GrawApp : public rex::ReXApp {
         PPCImageConfig));
   }
 
+  void OnConfigurePaths(rex::PathConfig& paths) override;
   void OnPreSetup(rex::RuntimeConfig& config) override;
   void OnPostLoadXexImage() override;
   void OnPostSetup() override;

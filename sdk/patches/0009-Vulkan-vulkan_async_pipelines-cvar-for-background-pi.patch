@@ -1,0 +1,44 @@
+From 12c4bb65d9a9c4fbd8946667a62cba40c038505f Mon Sep 17 00:00:00 2001
+From: Ben Williams <213356824+q8itz@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 19:26:33 +0000
+Subject: [PATCH 9/9] Vulkan: vulkan_async_pipelines cvar for background
+ pipeline creation
+
+---
+ src/graphics/vulkan/pipeline_cache.cpp | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 1ee6f94..b9f37c0 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -55,6 +55,12 @@ REXCVAR_DEFINE_INT32(
+     .range(-1, 32)
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++REXCVAR_DEFINE_BOOL(vulkan_async_pipelines, false, "GPU/Vulkan",
++                    "Create new pipelines on background threads. Draws using a pipeline that "
++                    "is still being created are skipped, so geometry can appear a few frames "
++                    "late, but the game doesn't stall.")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ REXCVAR_DEFINE_BOOL(vulkan_tessellation_wireframe, false, "GPU/Vulkan",
+                     "Render tessellation as wireframe")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+@@ -1113,9 +1119,10 @@ bool VulkanPipelineCache::ConfigurePipeline(
+ 
+   // A placeholder pixel shader discards every pixel. The frame that first draws
+   // the scene is then either skipped or presented as the clear that was already
+-  // in the render target. Compile the real pipeline on this thread instead, so
+-  // that draw writes color before the resolve.
+-  bool use_async = false;
++  // in the render target, so by default the real pipeline is compiled on this
++  // thread and that draw writes color before the resolve.
++  bool use_async = REXCVAR_GET(vulkan_async_pipelines) && !creation_threads_.empty() &&
++                   placeholder_pixel_shader_ != VK_NULL_HANDLE;
+   uint8_t async_priority = pipeline_util::kPriorityLowest;
+   if (use_async) {
+     uint32_t bound_rts =
+-- 
+2.53.0.697.g625c4fb2daa
+

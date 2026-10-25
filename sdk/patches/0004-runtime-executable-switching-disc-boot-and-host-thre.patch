@@ -1,0 +1,831 @@
+From 29b128bd7312362b4ace74aceee2148329df5c1f Mon Sep 17 00:00:00 2001
+From: Ben Williams <213356824+q8itz@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 16:52:02 +0000
+Subject: [PATCH 4/9] runtime: executable switching, disc boot and host-thread
+ FP state
+
+- Switch between default.xex and recompiled secondary executables in
+  process, including returning to default.xex from the secondary title.
+- Boot from a disc image passed as --game_data_root.
+- Resolve drive-less shader include paths on the disc.
+- Seed the FP control word for host threads entering guest code so SSE
+  exceptions stay masked.
+- Unlink the guest memory shm file right after creation so killed runs
+  do not leak /dev/shm.
+- Accept the default keyboard text when GRAW_ACCEPT_KEYBOARD is set.
+---
+ include/rex/runtime.h                    |  26 ++++
+ include/rex/system/function_dispatcher.h |   4 +
+ include/rex/system/kernel_state.h        |   7 ++
+ src/core/memory_posix.cpp                |   4 +
+ src/filesystem/virtual_file_system.cpp   |  15 +++
+ src/kernel/xam/xam_info.cpp              |  61 ++++++++-
+ src/kernel/xam/xam_ui.cpp                |   6 +-
+ src/system/function_dispatcher.cpp       |  70 ++++++++++-
+ src/system/kernel_state.cpp              | 150 ++++++++++++++++++++++-
+ src/system/runtime.cpp                   | 147 ++++++++++++++++++----
+ src/ui/rex_app.cpp                       |  46 ++++++-
+ 11 files changed, 501 insertions(+), 35 deletions(-)
+
+diff --git a/include/rex/runtime.h b/include/rex/runtime.h
+index 34f226c..59154e1 100644
+--- a/include/rex/runtime.h
++++ b/include/rex/runtime.h
+@@ -12,7 +12,9 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <filesystem>
++#include <mutex>
+ #include <functional>
+ #include <memory>
+ #include <optional>
+@@ -175,12 +177,28 @@ class Runtime {
+   // Call thread->Resume() after any pre-launch hooks.
+   system::object_ref<system::XThread> PrepareModuleLaunch();
+ 
++  // The guest asked to relaunch default.xex. The module waiter honors the
++  // first request in-process and treats a later request as a loop.
++  void RequestDefaultXexRelaunch();
++  bool ConsumeDefaultXexRelaunch();
++
++  // The guest asked to start a different executable that has recompiled code.
++  // The module waiter calls ReplaceExecutable after the current guest exits.
++  void RequestExecutableSwitch(std::string path);
++  std::optional<std::string> ConsumeExecutableSwitch();
++  X_STATUS ReplaceExecutable(std::string_view path);
++
++  // Guest path of the first executable loaded (default.xex), whose recompiled
++  // code is linked into the host binary.
++  const std::string& entrypoint_path() const { return entrypoint_path_; }
++
+   // Access the memory base pointer for recompiled code
+   uint8_t* virtual_membase() const;
+ 
+  private:
+   // Set up VFS: mounts game_data_root as game:/d:, update_data_root as update:
+   bool SetupVfs();
++  bool AttachEntrypointImage();
+ 
+   std::filesystem::path game_data_root_;
+   std::filesystem::path user_data_root_;
+@@ -204,6 +222,14 @@ class Runtime {
+   std::unique_ptr<system::IInputSystem> input_system_;
+   std::unique_ptr<runtime::ExportResolver> export_resolver_;
+ 
++  // Appended so existing member offsets stay stable for already-built callers.
++  std::atomic<int> title_relaunch_requests_{0};
++  std::atomic<bool> title_relaunch_used_{false};
++  std::mutex executable_switch_mutex_;
++  std::string pending_executable_switch_;
++  const PPCImageInfo* entrypoint_image_ = nullptr;
++  std::string entrypoint_path_;
++
+   static Runtime* instance_;
+ };
+ 
+diff --git a/include/rex/system/function_dispatcher.h b/include/rex/system/function_dispatcher.h
+index 916f3d6..593d480 100644
+--- a/include/rex/system/function_dispatcher.h
++++ b/include/rex/system/function_dispatcher.h
+@@ -112,6 +112,10 @@ class FunctionDispatcher : public IModuleRegistrar {
+    */
+   std::optional<std::pair<uint32_t, uint32_t>> UnregisterModule(const std::string& module_id);
+ 
++  // Drop the host-loaded entrypoint so another executable can occupy the same
++  // guest addresses. Returns the cleared guest range [lo, hi).
++  std::optional<std::pair<uint32_t, uint32_t>> ReleaseEntrypoint();
++
+  private:
+   bool Execute(ThreadState* thread_state, uint32_t address);
+ 
+diff --git a/include/rex/system/kernel_state.h b/include/rex/system/kernel_state.h
+index 9b9cf9e..d178116 100644
+--- a/include/rex/system/kernel_state.h
++++ b/include/rex/system/kernel_state.h
+@@ -258,6 +258,13 @@ class KernelState {
+                                 const char* shared_lib_name);
+   std::optional<RecompiledModuleInfo> FindRecompiledModule(std::string_view guest_path);
+ 
++  // Bind a recompiled shared library onto the executable that was just loaded
++  // at guest_path. The previous entrypoint table must already be released.
++  bool AttachRecompiledExecutable(std::string_view guest_path);
++
++  // Release the current executable's dispatch table and guest mapping.
++  void ReleaseExecutableImage();
++
+   object_ref<KernelModule> GetKernelModule(const std::string_view name);
+   template <typename T>
+   object_ref<KernelModule> LoadKernelModule() {
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index b52bf39..84ebd3c 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -483,6 +483,10 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+     shm_unlink(full_path.c_str());
+     return kFileMappingHandleInvalid;
+   }
++  // Mappings are only ever made through this fd, never reopened by name.
++  // Unlinking now lets the kernel free the backing when the process exits,
++  // even if it is killed, instead of leaking it in /dev/shm.
++  shm_unlink(full_path.c_str());
+   return static_cast<FileMappingHandle>(ret);
+ #endif
+ }
+diff --git a/src/filesystem/virtual_file_system.cpp b/src/filesystem/virtual_file_system.cpp
+index a1b4dad..087ea5f 100644
+--- a/src/filesystem/virtual_file_system.cpp
++++ b/src/filesystem/virtual_file_system.cpp
+@@ -120,6 +120,21 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
+     return rex::string::utf8_starts_with_case(normalized_path, d->mount_path());
+   });
+   if (it == devices_.cend()) {
++    // The shader compiler opens include names with no drive ("HDRToneMap.h").
++    // Those files are on the disc; do not synthesize their text.
++    if (normalized_path.find(':') == std::string::npos && !normalized_path.empty()) {
++      const auto file_name = rex::string::utf8_find_name_from_guest_path(normalized_path);
++      const std::string candidates[] = {
++          "game:\\data\\" + normalized_path,
++          "game:\\data\\ShaderFragmentsModel3\\" + file_name,
++      };
++      for (const auto& candidate : candidates) {
++        if (auto* found = ResolvePath(candidate)) {
++          REXFS_DEBUG("VFS: bare path '{}' resolved via '{}'", path, candidate);
++          return found;
++        }
++      }
++    }
+     REXFS_WARN("VFS: '{}' -> [no device]", path);
+     // Supress logging the error for ShaderDumpxe:\CompareBackEnds as this is
+     // not an actual problem nor something we care about.
+diff --git a/src/kernel/xam/xam_info.cpp b/src/kernel/xam/xam_info.cpp
+index 1fda053..a72d54f 100644
+--- a/src/kernel/xam/xam_info.cpp
++++ b/src/kernel/xam/xam_info.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <rex/kernel/xam/module.h>
++#include <rex/runtime.h>
+ #include <rex/kernel/xam/private.h>
+ #include <rex/logging.h>
+ #include <rex/hook.h>
+@@ -266,9 +267,27 @@ void XamLoaderLaunchTitle_entry(mapped_string raw_name_ptr, u32 flags) {
+   auto& loader_data = xam->loader_data();
+   loader_data.launch_flags = flags;
+ 
++  // A title started from default.xex (or booted straight into a secondary
++  // executable) returns to the menu by launching default.xex, the dashboard,
++  // or a path with no recompiled code. All of those mean the default.xex menu.
++  auto* runtime = rex::Runtime::instance();
++  const bool in_secondary_executable =
++      runtime && !runtime->entrypoint_path().empty() &&
++      REX_KERNEL_STATE()->GetExecutableModule() &&
++      REX_KERNEL_STATE()->GetExecutableModule()->path() != runtime->entrypoint_path();
++  auto return_to_entrypoint = [&]() {
++    REXLOG_INFO("Returning to {}", runtime->entrypoint_path());
++    loader_data.launch_path = runtime->entrypoint_path();
++    runtime->RequestExecutableSwitch(runtime->entrypoint_path());
++    REX_KERNEL_STATE()->TerminateTitle();
++  };
++
+   // Translate the launch path to a full path.
+   if (raw_name_ptr) {
+-    auto path = raw_name_ptr.value();
++    // value() is a view into guest memory. The join below returns a temporary,
++    // so path has to own its bytes or launch_path copies a freed buffer.
++    std::string path(raw_name_ptr.value());
++    REXLOG_INFO("XamLoaderLaunchTitle path='{}' flags={}", path, flags);
+     if (path.empty()) {
+       loader_data.launch_path = "game:\\default.xex";
+     } else {
+@@ -280,16 +299,54 @@ void XamLoaderLaunchTitle_entry(mapped_string raw_name_ptr, u32 flags) {
+       }
+       loader_data.launch_path = path;
+     }
++    auto slash = loader_data.launch_path.find_last_of("\\/");
++    auto name = slash == std::string::npos ? loader_data.launch_path
++                                           : loader_data.launch_path.substr(slash + 1);
++    bool is_default_xex = name.size() == 11;
++    if (is_default_xex) {
++      constexpr char kDefaultXex[] = "default.xex";
++      for (size_t i = 0; i < name.size(); ++i) {
++        char c = name[i];
++        if (c >= 'A' && c <= 'Z')
++          c = static_cast<char>(c - 'A' + 'a');
++        if (c != kDefaultXex[i]) {
++          is_default_xex = false;
++          break;
++        }
++      }
++    }
++    const bool has_recompiled_code =
++        REX_KERNEL_STATE()->FindRecompiledModule(loader_data.launch_path).has_value();
++    if (in_secondary_executable && !has_recompiled_code) {
++      return_to_entrypoint();
++      return;
++    }
++    if (is_default_xex) {
++      if (runtime) {
++        runtime->RequestDefaultXexRelaunch();
++      }
++    } else if (has_recompiled_code) {
++      if (runtime) {
++        runtime->RequestExecutableSwitch(loader_data.launch_path);
++      }
++    }
+   } else {
++    REXLOG_INFO("XamLoaderLaunchTitle to dashboard flags={}", flags);
++    if (in_secondary_executable) {
++      return_to_entrypoint();
++      return;
++    }
+     assert_always("Game requested exit to dashboard via XamLoaderLaunchTitle");
+   }
+ 
+-  // This function does not return.
++  // This function does not return. A default.xex relaunch is continued by the
++  // module waiter after this guest thread exits.
+   REX_KERNEL_STATE()->TerminateTitle();
+ }
+ 
+ void XamLoaderTerminateTitle_entry() {
+   // This function does not return.
++  REXLOG_INFO("XamLoaderTerminateTitle");
+   REX_KERNEL_STATE()->TerminateTitle();
+ }
+ 
+diff --git a/src/kernel/xam/xam_ui.cpp b/src/kernel/xam/xam_ui.cpp
+index 5a572ce..73acca9 100644
+--- a/src/kernel/xam/xam_ui.cpp
++++ b/src/kernel/xam/xam_ui.cpp
+@@ -15,6 +15,8 @@
+ #include <rex/system/flags.h>
+ #include <rex/system/kernel_state.h>
+ 
++#include <cstdlib>
++
+ #include <imgui.h>
+ 
+ REXCVAR_DEFINE_BOOL(headless, false, "Kernel",
+@@ -434,7 +436,9 @@ u32 XamShowKeyboardUI_entry(u32 user_index, u32 flags, mapped_wstring default_te
+   auto buffer_size = static_cast<size_t>(buffer_length) * 2;
+ 
+   X_RESULT result;
+-  if (REXCVAR_GET(headless)) {
++  // GRAW_ACCEPT_KEYBOARD accepts the default text so an unattended launch
++  // can get past the save-name prompt without a focused keyboard.
++  if (REXCVAR_GET(headless) || std::getenv("GRAW_ACCEPT_KEYBOARD")) {
+     auto run = [default_text, buffer, buffer_length, buffer_size]() -> X_RESULT {
+       // Redirect default_text back into the buffer.
+       if (!default_text) {
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index bd43109..1278806 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -13,6 +13,10 @@
+  *              role as a function dispatch table rather than a CPU emulator.
+  */
+ 
++#include <algorithm>
++#include <mutex>
++#include <unordered_set>
++
+ #include <rex/assert.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+@@ -35,8 +39,19 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ }  // namespace
+ 
+ static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
+-  REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+-            ctx.last_indirect_target);
++  // A missed function pointer should not take down the process. Log each
++  // address once and return so the caller continues.
++  static std::mutex seen_mu;
++  static std::unordered_set<uint32_t> seen;
++  const uint32_t target = ctx.last_indirect_target;
++  bool first = false;
++  {
++    std::lock_guard lock(seen_mu);
++    first = seen.insert(target).second;
++  }
++  if (first) {
++    REXLOG_ERROR("Call to unregistered function at guest address 0x{:08X}", target);
++  }
+ }
+ 
+ PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
+@@ -70,6 +85,17 @@ bool FunctionDispatcher::Execute(ThreadState* thread_state, uint32_t address) {
+   auto* ctx = thread_state->context();
+   auto* previous_thread_state = ThreadState::Get();
+ 
++  // Host threads (audio worker, interrupts) reach guest code without
++  // XThread::Execute seeding the FP control word. An unseeded csr of 0 makes
++  // the first flush-mode toggle unmask every host FP exception, and the guest
++  // mixer's float overflow then kills the process with SIGFPE. Xenon never
++  // traps on FP exceptions.
++  uint32_t masked_csr = ctx->fpscr.csr;
++  PPCFPSCRRegister::Platform::InitHostExceptions(masked_csr);
++  if (masked_csr != ctx->fpscr.csr) {
++    ctx->fpscr.InitHost();
++  }
++
+   // Rebind the active guest thread for cross-module callbacks.
+   ThreadState::Bind(thread_state);
+ 
+@@ -397,4 +423,44 @@ std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::UnregisterModul
+   return cleared_range;
+ }
+ 
++std::optional<std::pair<uint32_t, uint32_t>> FunctionDispatcher::ReleaseEntrypoint() {
++  std::lock_guard<std::recursive_mutex> lock(dispatch_mutex_);
++  if (entrypoint_code_base_ == 0) {
++    return std::nullopt;
++  }
++
++  ModuleTableInfo* table = nullptr;
++  for (auto& mod : module_tables_) {
++    if (mod.code_base == entrypoint_code_base_) {
++      table = &mod;
++      break;
++    }
++  }
++  if (!table) {
++    entrypoint_code_base_ = 0;
++    return std::nullopt;
++  }
++
++  const uint32_t lo = std::min(table->image_base, table->code_base);
++  const uint32_t hi = table->thunk_limit;
++  const uint32_t code_base = table->code_base;
++  for (auto it = function_table_.begin(); it != function_table_.end();) {
++    if (it->first >= lo && it->first < hi) {
++      it = function_table_.erase(it);
++    } else {
++      ++it;
++    }
++  }
++
++  memory_->DestroyFunctionTable(code_base);
++  module_tables_.erase(std::remove_if(module_tables_.begin(), module_tables_.end(),
++                                      [code_base](const ModuleTableInfo& mod) {
++                                        return mod.code_base == code_base;
++                                      }),
++                       module_tables_.end());
++  entrypoint_code_base_ = 0;
++  REXLOG_INFO("Released entrypoint function table {:08X}-{:08X}", lo, hi);
++  return std::make_pair(lo, hi);
++}
++
+ }  // namespace rex::runtime
+diff --git a/src/system/kernel_state.cpp b/src/system/kernel_state.cpp
+index 697399c..36c0a96 100644
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -911,17 +911,165 @@ void KernelState::RegisterRecompiledModule(const char* pe_name, const char* gues
+   recompiled_modules_.push_back(std::move(info));
+ }
+ 
++namespace {
++
++std::filesystem::path ResolveRecompiledLibrary(const std::string& name) {
++  std::error_code ec;
++  auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
++  const auto dir = ec ? std::filesystem::path() : exe.parent_path();
++  const std::filesystem::path candidates[] = {
++      dir / ("lib" + name + ".so"),
++      dir / (name + ".so"),
++      std::filesystem::path(name),
++  };
++  for (const auto& candidate : candidates) {
++    if (!candidate.empty() && std::filesystem::exists(candidate)) {
++      return candidate;
++    }
++  }
++  return dir.empty() ? std::filesystem::path(name) : dir / ("lib" + name + ".so");
++}
++
++}  // namespace
++
+ std::optional<KernelState::RecompiledModuleInfo> KernelState::FindRecompiledModule(
+     std::string_view guest_path) {
+   auto global_lock = global_critical_region_.Acquire();
+   auto normalized = NormalizeGuestPath(guest_path);
++  const auto query_slash = normalized.rfind('/');
++  const std::string_view query_file = query_slash == std::string::npos
++                                         ? std::string_view(normalized)
++                                         : std::string_view(normalized).substr(query_slash + 1);
+   for (const auto& info : recompiled_modules_) {
+-    if (info.guest_path == normalized)
++    if (info.guest_path == normalized) {
+       return info;
++    }
++    // LaunchTitle joins a bare filename onto the running title's directory
++    // (\Partition1\Yeti_Final_Xenon.exe). The manifest registers the filename.
++    if (query_file.empty()) {
++      continue;
++    }
++    const auto reg_slash = info.guest_path.rfind('/');
++    const std::string_view reg_file = reg_slash == std::string::npos
++                                         ? std::string_view(info.guest_path)
++                                         : std::string_view(info.guest_path).substr(reg_slash + 1);
++    if (reg_file == query_file) {
++      return info;
++    }
+   }
+   return std::nullopt;
+ }
+ 
++void KernelState::ReleaseExecutableImage() {
++  // An executable attached from a module library also has a module
++  // registration and a loaded library. Both must go, or attaching the same
++  // executable again later is refused as a duplicate.
++  std::string attached_key;
++  uint32_t image_lo = 0;
++  uint32_t image_hi = 0;
++  if (executable_module_) {
++    if (auto recomp = FindRecompiledModule(executable_module_->path())) {
++      auto global_lock = global_critical_region_.Acquire();
++      if (module_libraries_.count(recomp->guest_path)) {
++        attached_key = recomp->guest_path;
++      }
++    }
++    if (auto* xex = executable_module_->xex_module()) {
++      image_lo = xex->base_address();
++      image_hi = xex->base_address() + xex->image_size();
++    }
++  }
++
++  std::optional<std::pair<uint32_t, uint32_t>> cleared;
++  if (!attached_key.empty()) {
++    cleared = function_dispatcher_->UnregisterModule(attached_key);
++    if (cleared) {
++      cleared->first = std::min(cleared->first, image_lo);
++      cleared->second = std::max(cleared->second, image_hi);
++    } else if (image_hi) {
++      cleared = std::make_pair(image_lo, image_hi);
++    }
++    auto global_lock = global_critical_region_.Acquire();
++    auto lib_it = module_libraries_.find(attached_key);
++    deferred_unload_libraries_.push_back(std::move(lib_it->second));
++    module_libraries_.erase(lib_it);
++  } else {
++    cleared = function_dispatcher_->ReleaseEntrypoint();
++  }
++  if (cleared) {
++    for (auto& kernel_module : kernel_modules_) {
++      kernel_module->InvalidateThunkCacheInRange(cleared->first, cleared->second);
++    }
++  }
++  SetExecutableModule(nullptr);
++}
++
++bool KernelState::AttachRecompiledExecutable(std::string_view guest_path) {
++  auto recomp = FindRecompiledModule(guest_path);
++  if (!recomp || recomp->shared_lib_name.empty()) {
++    REXSYS_ERROR("No recompiled executable registered for '{}'", guest_path);
++    return false;
++  }
++  if (!executable_module_ || !executable_module_->xex_module()) {
++    REXSYS_ERROR("AttachRecompiledExecutable: no executable is loaded");
++    return false;
++  }
++
++  const auto lib_path = ResolveRecompiledLibrary(recomp->shared_lib_name);
++  REXSYS_INFO("Loading recompiled executable '{}' from {}", recomp->pe_name, lib_path.string());
++
++  const std::string lib_key = recomp->guest_path;
++  {
++    auto global_lock = global_critical_region_.Acquire();
++    if (module_libraries_.find(lib_key) != module_libraries_.end()) {
++      REXSYS_ERROR("Recompiled module '{}' is already loaded", lib_key);
++      return false;
++    }
++  }
++
++  rex::platform::DynamicLibrary library_local;
++  if (!library_local.Load(lib_path, rex::platform::SymbolResolution::kImmediate)) {
++    REXSYS_ERROR("Failed to load shared library '{}'", lib_path.string());
++    return false;
++  }
++
++  auto register_func = reinterpret_cast<runtime::FunctionDispatcher::RegisterFn>(
++      library_local.GetRawSymbol("ReXModule_Register"));
++  using GetImageInfoFn = const rex::PPCImageInfo* (*)();
++  auto get_image_info =
++      reinterpret_cast<GetImageInfoFn>(library_local.GetRawSymbol("ReXModule_GetImageInfo"));
++  if (!register_func || !get_image_info) {
++    REXSYS_ERROR("Recompiled library '{}' is missing its module exports", lib_path.string());
++    return false;
++  }
++
++  auto* xex = executable_module_->xex_module();
++  const auto* image_info = get_image_info();
++  if (!image_info || image_info->image_base != xex->base_address() ||
++      image_info->image_size != xex->image_size()) {
++    REXSYS_ERROR(
++        "Recompiled executable '{}' layout does not match the loaded XEX "
++        "(library {:08X}-{:08X}, XEX {:08X}-{:08X})",
++        recomp->pe_name, image_info ? image_info->image_base : 0,
++        image_info ? image_info->image_base + image_info->image_size : 0, xex->base_address(),
++        xex->base_address() + xex->image_size());
++    return false;
++  }
++
++  if (!function_dispatcher_->InitializeFunctionTable(image_info->code_base, image_info->code_size,
++                                                     image_info->image_base, image_info->image_size,
++                                                     /*is_entrypoint=*/true)) {
++    REXSYS_ERROR("InitializeFunctionTable failed for '{}'", recomp->pe_name);
++    return false;
++  }
++
++  function_dispatcher_->RegisterModule(lib_key, image_info->code_base, register_func);
++  auto global_lock = global_critical_region_.Acquire();
++  module_libraries_.emplace(lib_key, std::move(library_local));
++  REXSYS_INFO("Recompiled executable '{}' is registered", recomp->pe_name);
++  return true;
++}
++
+ void KernelState::SignalAllWaitableObjects() {
+   auto global_lock = global_critical_region_.Acquire();
+   auto objects = object_table_.GetAllObjects();
+diff --git a/src/system/runtime.cpp b/src/system/runtime.cpp
+index c10694c..7bdb8c2 100644
+--- a/src/system/runtime.cpp
++++ b/src/system/runtime.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
++#include <rex/filesystem/devices/disc_image_device.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/null_device.h>
+ #include <rex/filesystem/vfs.h>
+@@ -204,13 +205,34 @@ X_STATUS Runtime::Setup(const rex::PPCImageInfo& image_info, RuntimeConfig confi
+   }
+ 
+   codegen_flags_ = image_info.codegen_flags;
++  entrypoint_image_ = &image_info;
+ 
++  if (!AttachEntrypointImage()) {
++    Shutdown();
++    return X_STATUS_UNSUCCESSFUL;
++  }
++
++  REXSYS_DEBUG("Runtime setup complete (code: {:08X}-{:08X}, image: {:08X}-{:08X})",
++               image_info.code_base, image_info.code_base + image_info.code_size,
++               image_info.image_base, image_info.image_base + image_info.image_size);
++
++  const auto& flags = image_info.codegen_flags;
++  REXSYS_DEBUG(
++      "Codegen config: skip_lr={} skip_msr={} ctr={} xer={} cr={} reserved={} "
++      "non_argument={} non_volatile={}",
++      flags.skip_lr, flags.skip_msr, flags.ctr_as_local, flags.xer_as_local, flags.cr_as_local,
++      flags.reserved_as_local, flags.non_argument_as_local, flags.non_volatile_as_local);
++
++  return X_STATUS_SUCCESS;
++}
++
++bool Runtime::AttachEntrypointImage() {
++  const auto& image_info = *entrypoint_image_;
+   if (!function_dispatcher_->InitializeFunctionTable(image_info.code_base, image_info.code_size,
+                                                      image_info.image_base, image_info.image_size,
+                                                      /*is_entrypoint=*/true)) {
+     REXSYS_ERROR("Failed to initialize function table");
+-    Shutdown();
+-    return X_STATUS_UNSUCCESSFUL;
++    return false;
+   }
+ 
+   if (image_info.func_mappings) {
+@@ -237,23 +259,10 @@ X_STATUS Runtime::Setup(const rex::PPCImageInfo& image_info, RuntimeConfig confi
+                  duplicates, rejected);
+     if (rejected > 0) {
+       REXSYS_ERROR("PPCImageInfo registration: {} func_mappings entries rejected", rejected);
+-      Shutdown();
+-      return X_STATUS_UNSUCCESSFUL;
++      return false;
+     }
+   }
+-
+-  REXSYS_DEBUG("Runtime setup complete (code: {:08X}-{:08X}, image: {:08X}-{:08X})",
+-               image_info.code_base, image_info.code_base + image_info.code_size,
+-               image_info.image_base, image_info.image_base + image_info.image_size);
+-
+-  const auto& flags = image_info.codegen_flags;
+-  REXSYS_DEBUG(
+-      "Codegen config: skip_lr={} skip_msr={} ctr={} xer={} cr={} reserved={} "
+-      "non_argument={} non_volatile={}",
+-      flags.skip_lr, flags.skip_msr, flags.ctr_as_local, flags.xer_as_local, flags.cr_as_local,
+-      flags.reserved_as_local, flags.non_argument_as_local, flags.non_volatile_as_local);
+-
+-  return X_STATUS_SUCCESS;
++  return true;
+ }
+ 
+ void Runtime::Shutdown() {
+@@ -303,19 +312,38 @@ bool Runtime::SetupVfs() {
+     return false;
+   }
+ 
+-  // Mount game_data_root as \Device\Harddisk0\Partition1
++  // Mount game_data_root as \Device\Harddisk0\Partition1.
++  // A regular file is an XDVDFS disc image. A directory stays a host folder.
+   auto mount_path = "\\Device\\Harddisk0\\Partition1";
+-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(
+-      mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
+-  if (!device->Initialize()) {
+-    REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
++  std::unique_ptr<rex::filesystem::Device> device;
++  if (std::filesystem::is_regular_file(abs_game_root)) {
++    auto disc =
++        std::make_unique<rex::filesystem::DiscImageDevice>(mount_path, abs_game_root);
++    if (!disc->Initialize()) {
++      REXSYS_ERROR("Runtime::SetupVfs: Failed to mount disc image {}", abs_game_root.string());
++      return false;
++    }
++    REXSYS_INFO("  Mounted disc image {} ({} files) at {}", abs_game_root.string(),
++                disc->file_count(), mount_path);
++    device = std::move(disc);
++  } else if (std::filesystem::is_directory(abs_game_root)) {
++    auto host = std::make_unique<rex::filesystem::HostPathDevice>(
++        mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
++    if (!host->Initialize()) {
++      REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
++      return false;
++    }
++    REXSYS_DEBUG("  Mounted {} at {}", abs_game_root.string(), mount_path);
++    device = std::move(host);
++  } else {
++    REXSYS_ERROR("Runtime::SetupVfs: game_data_root is not a directory or disc image: {}",
++                 abs_game_root.string());
+     return false;
+   }
+   if (!file_system_->RegisterDevice(std::move(device))) {
+-    REXSYS_ERROR("Runtime::SetupVfs: Failed to register host path device");
++    REXSYS_ERROR("Runtime::SetupVfs: Failed to register game device");
+     return false;
+   }
+-  REXSYS_DEBUG("  Mounted {} at {}", abs_game_root.string(), mount_path);
+ 
+   // Register symbolic links for game: and D:
+   file_system_->RegisterSymbolicLink("game:", mount_path);
+@@ -367,6 +395,9 @@ X_STATUS Runtime::LoadXexImage(const std::string_view module_path) {
+     return status;
+   }
+ 
++  if (entrypoint_path_.empty()) {
++    entrypoint_path_ = module->path();
++  }
+   kernel_state_->SetExecutableModule(module);
+   REXSYS_DEBUG("  XEX image loaded successfully");
+   return X_STATUS_SUCCESS;
+@@ -398,4 +429,72 @@ system::object_ref<system::XThread> Runtime::LaunchModule() {
+   return thread;
+ }
+ 
++void Runtime::RequestDefaultXexRelaunch() {
++  int count = title_relaunch_requests_.fetch_add(1, std::memory_order_acq_rel) + 1;
++  if (count == 1) {
++    REXSYS_INFO("Title requested relaunch of default.xex; continuing in-process once");
++  } else {
++    REXSYS_ERROR("Title relaunch loop: default.xex requested again (count {}); stopping", count);
++  }
++}
++
++bool Runtime::ConsumeDefaultXexRelaunch() {
++  if (title_relaunch_requests_.load(std::memory_order_acquire) != 1) {
++    return false;
++  }
++  return !title_relaunch_used_.exchange(true, std::memory_order_acq_rel);
++}
++
++void Runtime::RequestExecutableSwitch(std::string path) {
++  std::lock_guard lock(executable_switch_mutex_);
++  pending_executable_switch_ = std::move(path);
++  REXSYS_INFO("Title requested executable switch to {}", pending_executable_switch_);
++}
++
++std::optional<std::string> Runtime::ConsumeExecutableSwitch() {
++  std::lock_guard lock(executable_switch_mutex_);
++  if (pending_executable_switch_.empty()) {
++    return std::nullopt;
++  }
++  std::string path = std::move(pending_executable_switch_);
++  pending_executable_switch_.clear();
++  return path;
++}
++
++X_STATUS Runtime::ReplaceExecutable(std::string_view path) {
++  REXSYS_INFO("Replacing executable with {}", path);
++  if (graphics_system_) {
++    graphics_system_->SetInterruptCallback(0, 0);
++  }
++
++  // Drops the dispatch table and the guest mapping before the new image
++  // is allocated at the same address.
++  kernel_state_->ReleaseExecutableImage();
++
++  X_STATUS status = LoadXexImage(path);
++  if (XFAILED(status)) {
++    return status;
++  }
++  if (kernel_state_->FindRecompiledModule(path)) {
++    if (!kernel_state_->AttachRecompiledExecutable(path)) {
++      return X_STATUS_UNSUCCESSFUL;
++    }
++    return X_STATUS_SUCCESS;
++  }
++
++  // Returning to the entrypoint (default.xex), whose code is linked into the
++  // host binary rather than loaded from a module library.
++  auto* xex = kernel_state_->GetExecutableModule()->xex_module();
++  if (!entrypoint_image_ || xex->base_address() != entrypoint_image_->image_base ||
++      xex->image_size() != entrypoint_image_->image_size) {
++    REXSYS_ERROR("{} has no recompiled code and is not the entrypoint image", path);
++    return X_STATUS_UNSUCCESSFUL;
++  }
++  if (!AttachEntrypointImage()) {
++    return X_STATUS_UNSUCCESSFUL;
++  }
++  REXSYS_INFO("Entrypoint executable {} is registered", path);
++  return X_STATUS_SUCCESS;
++}
++
+ }  // namespace rex
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index b94fe9e..024de9c 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -207,7 +207,12 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+     return false;
+   }
+-  if (!std::filesystem::is_directory(paths.game_data_root)) {
++  std::error_code game_root_ec;
++  const bool game_root_is_directory =
++      std::filesystem::is_directory(paths.game_data_root, game_root_ec);
++  const bool game_root_is_file =
++      std::filesystem::is_regular_file(paths.game_data_root, game_root_ec);
++  if (!game_root_is_directory && !game_root_is_file) {
+     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
+     REXLOG_ERROR("{}", msg);
+     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+@@ -262,8 +267,8 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
+   std::string xex_image = "game:\\default.xex";
+   OnLoadXexImage(xex_image);
+ 
+-  // Mirrors the game:\ / d:\ -> game_data_root mapping in Runtime::SetupVfs.
+-  {
++  // Host folders are checked on disk. A disc image is resolved through the VFS.
++  if (game_root_is_directory) {
+     constexpr std::string_view kGameDevice = "game:\\";
+     constexpr std::string_view kDDevice = "d:\\";
+     std::string_view tail = xex_image;
+@@ -469,8 +474,39 @@ void ReXApp::LaunchModule() {
+     main_thread->Resume();
+ 
+     module_thread_ = std::thread([this, main_thread = std::move(main_thread)]() mutable {
+-      main_thread->Wait(0, 0, 0, nullptr);
+-      OnGuestThreadExit(main_thread.get());
++      for (;;) {
++        main_thread->Wait(0, 0, 0, nullptr);
++        OnGuestThreadExit(main_thread.get());
++        if (shutting_down_.load(std::memory_order_acquire)) {
++          break;
++        }
++        if (!runtime_->ConsumeDefaultXexRelaunch()) {
++          if (auto switched = runtime_->ConsumeExecutableSwitch()) {
++            REXLOG_INFO("Switching executable to {}", *switched);
++            if (XFAILED(runtime_->ReplaceExecutable(*switched))) {
++              REXLOG_ERROR("Executable switch to {} failed", *switched);
++              break;
++            }
++            auto next = runtime_->PrepareModuleLaunch();
++            if (!next) {
++              REXLOG_ERROR("Failed to start switched executable");
++              break;
++            }
++            main_thread = std::move(next);
++            main_thread->Resume();
++            continue;
++          }
++          break;
++        }
++        REXLOG_INFO("Relaunching default.xex in-process");
++        auto next = runtime_->PrepareModuleLaunch();
++        if (!next) {
++          REXLOG_ERROR("In-process relaunch of default.xex failed");
++          break;
++        }
++        main_thread = std::move(next);
++        main_thread->Resume();
++      }
+       REXLOG_INFO("Execution complete");
+       if (!shutting_down_.load(std::memory_order_acquire)) {
+         app_context().CallInUIThread([this]() { app_context().QuitFromUIThread(); });
+-- 
+2.53.0.697.g625c4fb2daa
+

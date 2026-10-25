@@ -1,0 +1,645 @@
+From b9b9849c4adddd27d60ca5bd304fcaf3ecbbc6cf Mon Sep 17 00:00:00 2001
+From: Ben Williams <213356824+q8itz@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 18:24:22 +0000
+Subject: [PATCH 8/9] ui: offer CAS and FSR 1 without the FidelityFX SDK; apply
+ output effects live
+
+- The spatial CAS and FSR 1 (EASU + RCAS) presenter paths only use the
+  precompiled shaders in the tree, so they no longer depend on the
+  FidelityFX SDK being fetched. Temporal FSR 2/3 are still only offered
+  when the FidelityFX runtime is linked.
+- present_effect, the CAS/FSR sharpness settings and present_dither apply
+  to the presenter as soon as they change on the UI thread.
+- swap_post_effect (FXAA) applies to the command processor when changed.
+---
+ include/rex/ui/d3d12/d3d12_presenter.h |  4 --
+ include/rex/ui/presenter.h             | 21 ----------
+ include/rex/ui/vulkan/presenter.h      |  4 --
+ src/graphics/graphics_system.cpp       |  7 ++++
+ src/ui/CMakeLists.txt                  |  1 -
+ src/ui/d3d12/d3d12_presenter.cpp       | 14 -------
+ src/ui/presenter.cpp                   | 57 +++++++++++---------------
+ src/ui/vulkan/vulkan_presenter.cpp     | 10 -----
+ 8 files changed, 32 insertions(+), 86 deletions(-)
+
+diff --git a/include/rex/ui/d3d12/d3d12_presenter.h b/include/rex/ui/d3d12/d3d12_presenter.h
+index 83d09f7..eab6e21 100644
+--- a/include/rex/ui/d3d12/d3d12_presenter.h
++++ b/include/rex/ui/d3d12/d3d12_presenter.h
+@@ -132,12 +132,10 @@ class D3D12Presenter final : public Presenter {
+ 
+   enum GuestOutputPaintRootSignatureIndex : size_t {
+     kGuestOutputPaintRootSignatureIndexBilinear,
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+     kGuestOutputPaintRootSignatureIndexCasSharpen,
+     kGuestOutputPaintRootSignatureIndexCasResample,
+     kGuestOutputPaintRootSignatureIndexFsrEasu,
+     kGuestOutputPaintRootSignatureIndexFsrRcas,
+-#endif
+ 
+     kGuestOutputPaintRootSignatureCount,
+   };
+@@ -148,7 +146,6 @@ class D3D12Presenter final : public Presenter {
+       case GuestOutputPaintEffect::kBilinear:
+       case GuestOutputPaintEffect::kBilinearDither:
+         return kGuestOutputPaintRootSignatureIndexBilinear;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case GuestOutputPaintEffect::kCasSharpen:
+       case GuestOutputPaintEffect::kCasSharpenDither:
+         return kGuestOutputPaintRootSignatureIndexCasSharpen;
+@@ -160,7 +157,6 @@ class D3D12Presenter final : public Presenter {
+       case GuestOutputPaintEffect::kFsrRcas:
+       case GuestOutputPaintEffect::kFsrRcasDither:
+         return kGuestOutputPaintRootSignatureIndexFsrRcas;
+-#endif
+       default:
+         assert_unhandled_case(effect);
+         return kGuestOutputPaintRootSignatureCount;
+diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
+index afb4a30..d10f534 100644
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -212,7 +212,6 @@ class Presenter {
+    public:
+     enum class Effect {
+       kBilinear,
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       kCas,
+       // AMD FidelityFX Super Resolution upsampling, Contrast Adaptive
+       // Sharpening otherwise.
+@@ -225,10 +224,8 @@ class Presenter {
+       // where available; currently still experimental due to limited temporal
+       // inputs in the presenter path.
+       kFsr3,
+-#endif
+     };
+ 
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+     enum class FsrQualityMode {
+       // Keep current behavior and use the guest output size as-is.
+       kAuto,
+@@ -260,7 +257,6 @@ class Presenter {
+     static constexpr float kFsrSharpnessReductionDefault = 0.2f;
+     static_assert(kFsrSharpnessReductionDefault >= kFsrSharpnessReductionMin &&
+                   kFsrSharpnessReductionDefault <= kFsrSharpnessReductionMax);
+-#endif  // defined(REX_HAS_FIDELITYFX_SDK)
+ 
+     // In the sharpness setters, min / max with a constant as the first argument
+     // also drops NaNs.
+@@ -273,7 +269,6 @@ class Presenter {
+     Effect GetEffect() const { return effect_; }
+     void SetEffect(Effect new_effect) { effect_ = new_effect; }
+ 
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+     float GetCasAdditionalSharpness() const { return cas_additional_sharpness_; }
+     void SetCasAdditionalSharpness(float new_cas_additional_sharpness) {
+       cas_additional_sharpness_ =
+@@ -299,7 +294,6 @@ class Presenter {
+     void SetFsrQualityMode(FsrQualityMode new_fsr_quality_mode) {
+       fsr_quality_mode_ = new_fsr_quality_mode;
+     }
+-#endif  // defined(REX_HAS_FIDELITYFX_SDK)
+ 
+     // Very tiny effect, but highly noticeable, for instance, on the sky in the
+     // 4D5307E6 main menu (prominently in Custom Games, especially with FSR -
+@@ -314,12 +308,10 @@ class Presenter {
+     // original front buffer as possible.
+     bool allow_overscan_cutoff_ = false;
+     Effect effect_ = Effect::kBilinear;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+     float cas_additional_sharpness_ = kCasAdditionalSharpnessDefault;
+     uint32_t fsr_max_upsampling_passes_ = kFsrMaxUpscalingPassesMax;
+     float fsr_sharpness_reduction_ = kFsrSharpnessReductionDefault;
+     FsrQualityMode fsr_quality_mode_ = FsrQualityMode::kAuto;
+-#endif
+     bool dither_ = false;
+   };
+ 
+@@ -427,7 +419,6 @@ class Presenter {
+   enum class GuestOutputPaintEffect {
+     kBilinear,
+     kBilinearDither,
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+     kCasSharpen,
+     kCasSharpenDither,
+     kCasResample,
+@@ -435,7 +426,6 @@ class Presenter {
+     kFsrEasu,
+     kFsrRcas,
+     kFsrRcasDither,
+-#endif
+ 
+     kCount,
+   };
+@@ -446,11 +436,9 @@ class Presenter {
+       // Dithering is never performed in intermediate passes because it may be
+       // interpreted as features by the subsequent passes.
+       case GuestOutputPaintEffect::kBilinearDither:
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case GuestOutputPaintEffect::kCasSharpenDither:
+       case GuestOutputPaintEffect::kCasResampleDither:
+       case GuestOutputPaintEffect::kFsrRcasDither:
+-#endif
+         return false;
+       default:
+         // The result of any other effect can be stretched with bilinear
+@@ -461,16 +449,13 @@ class Presenter {
+ 
+   static constexpr bool CanGuestOutputPaintEffectBeFinal(GuestOutputPaintEffect effect) {
+     switch (effect) {
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case GuestOutputPaintEffect::kFsrEasu:
+         return false;
+-#endif
+       default:
+         return true;
+     };
+   }
+ 
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   // The longest path is kFsrMaxUpscalingPassesMax + optionally RCAS +
+   // optionally bilinear, when upscaling by more than
+   // 2^kFsrMaxUpscalingPassesMax along any direction.
+@@ -478,10 +463,6 @@ class Presenter {
+   // more than 2 along any direction) CAS followed by bilinear.
+   static constexpr size_t kMaxGuestOutputPaintEffects =
+       GuestOutputPaintConfig::kFsrMaxUpscalingPassesMax + 2;
+-#else
+-  // Bilinear-only path: at most 1 effect.
+-  static constexpr size_t kMaxGuestOutputPaintEffects = 1;
+-#endif
+ 
+   struct GuestOutputPaintFlow {
+     // Letterbox on up to 4 sides.
+@@ -548,7 +529,6 @@ class Presenter {
+     }
+   };
+ 
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   static constexpr float CalculateCasPostSetupSharpness(float sharpness) {
+     // CasSetup const1.x.
+     return -1.0f / (8.0f - 3.0f * sharpness);
+@@ -615,7 +595,6 @@ class Presenter {
+       sharpness_post_setup = CalculatePostSetupSharpness(config.GetFsrSharpnessReduction());
+     }
+   };
+-#endif  // defined(REX_HAS_FIDELITYFX_SDK)
+ 
+   explicit Presenter(HostGpuLossCallback host_gpu_loss_callback)
+       : host_gpu_loss_callback_(host_gpu_loss_callback) {}
+diff --git a/include/rex/ui/vulkan/presenter.h b/include/rex/ui/vulkan/presenter.h
+index 56ee43b..abdea6b 100644
+--- a/include/rex/ui/vulkan/presenter.h
++++ b/include/rex/ui/vulkan/presenter.h
+@@ -230,12 +230,10 @@ class VulkanPresenter final : public Presenter {
+ 
+   enum GuestOutputPaintPipelineLayoutIndex : size_t {
+     kGuestOutputPaintPipelineLayoutIndexBilinear,
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+     kGuestOutputPaintPipelineLayoutIndexCasSharpen,
+     kGuestOutputPaintPipelineLayoutIndexCasResample,
+     kGuestOutputPaintPipelineLayoutIndexFsrEasu,
+     kGuestOutputPaintPipelineLayoutIndexFsrRcas,
+-#endif
+ 
+     kGuestOutputPaintPipelineLayoutCount,
+   };
+@@ -246,7 +244,6 @@ class VulkanPresenter final : public Presenter {
+       case GuestOutputPaintEffect::kBilinear:
+       case GuestOutputPaintEffect::kBilinearDither:
+         return kGuestOutputPaintPipelineLayoutIndexBilinear;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case GuestOutputPaintEffect::kCasSharpen:
+       case GuestOutputPaintEffect::kCasSharpenDither:
+         return kGuestOutputPaintPipelineLayoutIndexCasSharpen;
+@@ -258,7 +255,6 @@ class VulkanPresenter final : public Presenter {
+       case GuestOutputPaintEffect::kFsrRcas:
+       case GuestOutputPaintEffect::kFsrRcasDither:
+         return kGuestOutputPaintPipelineLayoutIndexFsrRcas;
+-#endif
+       default:
+         assert_unhandled_case(effect);
+         return kGuestOutputPaintPipelineLayoutCount;
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 171ffca..0af6924 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -137,6 +137,12 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+     return X_STATUS_UNSUCCESSFUL;
+   }
+   command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(REXCVAR_GET(swap_post_effect)));
++  rex::cvar::RegisterChangeCallback("swap_post_effect", [this](std::string_view,
++                                                               std::string_view value) {
++    if (command_processor_) {
++      command_processor_->SetDesiredSwapPostEffect(ParseSwapPostEffect(std::string(value)));
++    }
++  });
+ 
+   // Register GPU MMIO handlers
+   // GPU registers are at 0x7FC80000-0x7FCFFFFF
+@@ -203,6 +209,7 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+ }
+ 
+ void GraphicsSystem::Shutdown() {
++  rex::cvar::UnregisterChangeCallbacks("swap_post_effect");
+   if (command_processor_) {
+     command_processor_->Shutdown();
+     command_processor_.reset();
+diff --git a/src/ui/CMakeLists.txt b/src/ui/CMakeLists.txt
+index 5bd3dc5..48d1232 100644
+--- a/src/ui/CMakeLists.txt
++++ b/src/ui/CMakeLists.txt
+@@ -121,7 +121,6 @@ if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sd
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sdk/include"
+         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/ffx-api/include"
+     )
+-    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
+ endif()
+ 
+ set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)
+diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
+index 306118e..b7bc8af 100644
+--- a/src/ui/d3d12/d3d12_presenter.cpp
++++ b/src/ui/d3d12/d3d12_presenter.cpp
+@@ -39,7 +39,6 @@ namespace rex::ui::d3d12 {
+ namespace shaders {
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_bilinear_dither_ps.h"
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_bilinear_ps.h"
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_resample_dither_ps.h"
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_resample_ps.h"
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_cas_sharpen_dither_ps.h"
+@@ -47,7 +46,6 @@ namespace shaders {
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_easu_ps.h"
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_rcas_dither_ps.h"
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_ffx_fsr_rcas_ps.h"
+-#endif
+ #include "ui/shaders/bytecode/d3d12_5_1/guest_output_triangle_strip_rect_vs.h"
+ }  // namespace shaders
+ 
+@@ -796,12 +794,8 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+           guest_output_paint_config.GetEffect() == GuestOutputPaintConfig::Effect::kFsr3;
+ #endif
+       auto is_temporal_easu_effect = [&]([[maybe_unused]] size_t effect_index) {
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+         return temporal_effect_selected &&
+                guest_output_flow.effects[effect_index] == GuestOutputPaintEffect::kFsrEasu;
+-#else
+-        return false;
+-#endif
+       };
+       for (size_t i = 0; i < guest_output_flow.effect_count; ++i) {
+         bool is_final_effect = i + 1 >= guest_output_flow.effect_count;
+@@ -948,19 +942,16 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+           UINT effect_constants_size = 0;
+           union {
+             BilinearConstants bilinear;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+             CasSharpenConstants cas_sharpen;
+             CasResampleConstants cas_resample;
+             FsrEasuConstants fsr_easu;
+             FsrRcasConstants fsr_rcas;
+-#endif
+           } effect_constants;
+           switch (guest_output_paint_root_signature_index) {
+             case kGuestOutputPaintRootSignatureIndexBilinear: {
+               effect_constants_size = sizeof(effect_constants.bilinear);
+               effect_constants.bilinear.Initialize(guest_output_flow, i);
+             } break;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+             case kGuestOutputPaintRootSignatureIndexCasSharpen: {
+               effect_constants_size = sizeof(effect_constants.cas_sharpen);
+               effect_constants.cas_sharpen.Initialize(guest_output_flow, i,
+@@ -979,7 +970,6 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawe
+               effect_constants_size = sizeof(effect_constants.fsr_rcas);
+               effect_constants.fsr_rcas.Initialize(guest_output_flow, i, guest_output_paint_config);
+             } break;
+-#endif
+             default:
+               break;
+           }
+@@ -1269,7 +1259,6 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+     *(guest_output_paint_root_signatures_[kGuestOutputPaintRootSignatureIndexBilinear]
+           .ReleaseAndGetAddressOf()) = guest_output_paint_root_signature;
+   }
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   // EASU (needs the sampler).
+   guest_output_paint_root_parameter_effect_constants.Constants.Num32BitValues =
+       sizeof(FsrEasuConstants) / sizeof(uint32_t);
+@@ -1332,7 +1321,6 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+     *(guest_output_paint_root_signatures_[kGuestOutputPaintRootSignatureIndexCasResample]
+           .ReleaseAndGetAddressOf()) = guest_output_paint_root_signature;
+   }
+-#endif  // defined(REX_HAS_FIDELITYFX_SDK)
+ 
+   // Guest output painting pipelines.
+   D3D12_GRAPHICS_PIPELINE_STATE_DESC guest_output_paint_pipeline_desc = {};
+@@ -1363,7 +1351,6 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+         guest_output_paint_pipeline_desc.PS.BytecodeLength =
+             sizeof(shaders::guest_output_bilinear_dither_ps);
+         break;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case GuestOutputPaintEffect::kCasSharpen:
+         guest_output_paint_pipeline_desc.PS.pShaderBytecode =
+             shaders::guest_output_ffx_cas_sharpen_ps;
+@@ -1404,7 +1391,6 @@ bool D3D12Presenter::InitializeSurfaceIndependent() {
+         guest_output_paint_pipeline_desc.PS.BytecodeLength =
+             sizeof(shaders::guest_output_ffx_fsr_rcas_dither_ps);
+         break;
+-#endif
+       default:
+         // Not supported by this implementation.
+         continue;
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 7360ed9..d0e7b9b 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -40,18 +40,21 @@ REXCVAR_DEFINE_INT32(present_safe_area_y, 90, "UI/Presenter",
+                      "Vertical safe area percentage (0-100)")
+     .range(0, 100);
+ 
+-#if defined(REX_HAS_FIDELITYFX_SDK)
++#if defined(REX_HAS_FIDELITYFX_RUNTIME) && REX_HAS_FIDELITYFX_RUNTIME
+ REXCVAR_DEFINE_STRING(present_effect, "bilinear", "UI/Presenter",
+                       "Guest output effect: bilinear, cas, fsr, fsr2, fsr3")
+-    .allowed({"bilinear", "cas", "fsr", "fsr2", "fsr3"})
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++    .allowed({"bilinear", "cas", "fsr", "fsr2", "fsr3"});
++#else
++REXCVAR_DEFINE_STRING(present_effect, "bilinear", "UI/Presenter",
++                      "Guest output effect: bilinear, cas, fsr")
++    .allowed({"bilinear", "cas", "fsr"});
++#endif
+ 
+ REXCVAR_DEFINE_DOUBLE(present_cas_additional_sharpness,
+                       rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessDefault,
+                       "UI/Presenter", "Additional CAS sharpness in [0, 1]")
+     .range(rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMin,
+-           rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMax)
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++           rex::ui::Presenter::GuestOutputPaintConfig::kCasAdditionalSharpnessMax);
+ 
+ REXCVAR_DEFINE_INT32(present_fsr_max_upsampling_passes,
+                      rex::ui::Presenter::GuestOutputPaintConfig::kFsrMaxUpscalingPassesMax,
+@@ -63,23 +66,16 @@ REXCVAR_DEFINE_DOUBLE(present_fsr_sharpness_reduction,
+                       rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionDefault,
+                       "UI/Presenter", "FSR RCAS sharpness reduction in stops")
+     .range(rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMin,
+-           rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax)
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++           rex::ui::Presenter::GuestOutputPaintConfig::kFsrSharpnessReductionMax);
+ 
+ REXCVAR_DEFINE_STRING(
+     present_fsr_quality_mode, "auto", "UI/Presenter",
+     "Temporal FSR quality mode: auto, nativeaa, quality, balanced, performance, ultra_performance")
+     .allowed({"auto", "nativeaa", "quality", "balanced", "performance", "ultra_performance"})
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+-#else
+-REXCVAR_DEFINE_STRING(present_effect, "bilinear", "UI/Presenter", "Guest output effect: bilinear")
+-    .allowed({"bilinear"})
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+-#endif
+ 
+ REXCVAR_DEFINE_BOOL(present_dither, false, "UI/Presenter",
+-                    "Enable output dithering in the final present pass")
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++                    "Enable output dithering in the final present pass");
+ 
+ REXCVAR_DEFINE_BOOL(present_allow_overscan_cutoff, false, "UI/Presenter",
+                     "Allow overscan cutoff based on safe area settings")
+@@ -88,11 +84,14 @@ REXCVAR_DEFINE_BOOL(present_allow_overscan_cutoff, false, "UI/Presenter",
+ namespace {
+ using GuestOutputPaintConfig = rex::ui::Presenter::GuestOutputPaintConfig;
+ 
++constexpr const char* kLiveGuestOutputPaintCvars[] = {
++    "present_effect", "present_cas_additional_sharpness", "present_fsr_sharpness_reduction",
++    "present_dither"};
++
+ GuestOutputPaintConfig::Effect ParsePresentEffect(const std::string& effect_name) {
+   std::string lowered = effect_name;
+   std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                  [](unsigned char c) { return char(std::tolower(c)); });
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   if (lowered == "cas") {
+     return GuestOutputPaintConfig::Effect::kCas;
+   }
+@@ -105,11 +104,9 @@ GuestOutputPaintConfig::Effect ParsePresentEffect(const std::string& effect_name
+   if (lowered == "fsr3") {
+     return GuestOutputPaintConfig::Effect::kFsr3;
+   }
+-#endif
+   return GuestOutputPaintConfig::Effect::kBilinear;
+ }
+ 
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+ bool IsTemporalFsrCompatibilityEffect(GuestOutputPaintConfig::Effect effect) {
+   return effect == GuestOutputPaintConfig::Effect::kFsr2 ||
+          effect == GuestOutputPaintConfig::Effect::kFsr3;
+@@ -249,25 +246,20 @@ void LogTemporalFsrQualityModeInputLimitOnce() {
+         "guest output; using guest output size");
+   }
+ }
+-#endif  // defined(REX_HAS_FIDELITYFX_SDK)
+ 
+ GuestOutputPaintConfig BuildGuestOutputPaintConfigFromCVar() {
+   GuestOutputPaintConfig config;
+   GuestOutputPaintConfig::Effect parsed_effect = ParsePresentEffect(REXCVAR_GET(present_effect));
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   if (IsTemporalFsrCompatibilityEffect(parsed_effect)) {
+     LogTemporalFsrCompatibilityPathOnce();
+   }
+-#endif
+   config.SetAllowOverscanCutoff(REXCVAR_GET(present_allow_overscan_cutoff));
+   config.SetEffect(parsed_effect);
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   config.SetCasAdditionalSharpness(float(REXCVAR_GET(present_cas_additional_sharpness)));
+   config.SetFsrMaxUpsamplingPasses(
+       uint32_t(std::max(int32_t(1), REXCVAR_GET(present_fsr_max_upsampling_passes))));
+   config.SetFsrSharpnessReduction(float(REXCVAR_GET(present_fsr_sharpness_reduction)));
+   config.SetFsrQualityMode(ParsePresentFsrQualityMode(REXCVAR_GET(present_fsr_quality_mode)));
+-#endif
+   config.SetDither(REXCVAR_GET(present_dither));
+   return config;
+ }
+@@ -287,6 +279,10 @@ Presenter::~Presenter() {
+   // it if needed.
+   assert_false(is_executing_ui_drawers_);
+ 
++  for (const char* name : kLiveGuestOutputPaintCvars) {
++    rex::cvar::UnregisterChangeCallbacks(name);
++  }
++
+ #if REX_PLATFORM_WIN32
+   if (dxgi_ui_tick_thread_.joinable()) {
+     {
+@@ -659,7 +655,6 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConf
+     modified = true;
+     request_repaint = true;
+   }
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   if (guest_output_paint_config_.GetFsrSharpnessReduction() !=
+       new_config.GetFsrSharpnessReduction()) {
+     modified = true;
+@@ -679,12 +674,10 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConf
+       request_repaint = true;
+     }
+   }
+-#endif
+   if (guest_output_paint_config_.GetDither() != new_config.GetDither()) {
+     modified = true;
+     request_repaint = true;
+   }
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   if (guest_output_paint_config_.GetFsrQualityMode() != new_config.GetFsrQualityMode()) {
+     modified = true;
+     if (new_config.GetEffect() == GuestOutputPaintConfig::Effect::kFsr2 ||
+@@ -692,7 +685,6 @@ void Presenter::SetGuestOutputPaintConfigFromUIThread(const GuestOutputPaintConf
+       request_repaint = true;
+     }
+   }
+-#endif
+   if (modified) {
+     {
+       std::unique_lock<std::mutex> config_lock(guest_output_paint_config_mutex_);
+@@ -790,6 +782,13 @@ bool Presenter::InitializeCommonSurfaceIndependent() {
+     std::lock_guard<std::mutex> config_lock(guest_output_paint_config_mutex_);
+     guest_output_paint_config_ = BuildGuestOutputPaintConfigFromCVar();
+   }
++  // Settings UIs change these on the UI thread, which is where the new config
++  // has to be applied.
++  for (const char* name : kLiveGuestOutputPaintCvars) {
++    rex::cvar::RegisterChangeCallback(name, [this](std::string_view, std::string_view) {
++      SetGuestOutputPaintConfigFromUIThread(BuildGuestOutputPaintConfigFromCVar());
++    });
++  }
+ 
+   // Initialize UI frame rate limiting.
+ #if REX_PLATFORM_WIN32
+@@ -1030,7 +1029,6 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+   uint32_t output_width_clamped = std::min(output_width, max_rt_width);
+   uint32_t output_height_clamped = std::min(output_height, max_rt_height);
+ 
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+   if (config.GetEffect() == GuestOutputPaintConfig::Effect::kCas ||
+       config.GetEffect() == GuestOutputPaintConfig::Effect::kFsr ||
+       config.GetEffect() == GuestOutputPaintConfig::Effect::kFsr2 ||
+@@ -1145,7 +1143,6 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+                                               : GuestOutputPaintEffect::kCasResample;
+     }
+   }
+-#endif  // defined(REX_HAS_FIDELITYFX_SDK)
+ 
+   std::pair<uint32_t, uint32_t>* last_pre_bilinear_effect_size =
+       flow.effect_count ? &flow.effect_output_sizes[flow.effect_count - 1] : nullptr;
+@@ -1156,12 +1153,10 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+     // Clamp the output size of the last effect to the maximum render target
+     // size because it will go to an intermediate image now.
+     if (last_pre_bilinear_effect_size) {
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       // RCAS only works for 1:1, clamping must be done explicitly for FSR.
+       assert_false(flow.effects[flow.effect_count - 1] == GuestOutputPaintEffect::kFsrRcas &&
+                    (last_pre_bilinear_effect_size->first > max_rt_width ||
+                     last_pre_bilinear_effect_size->second > max_rt_height));
+-#endif
+       last_pre_bilinear_effect_size->first =
+           std::min(last_pre_bilinear_effect_size->first, max_rt_width);
+       last_pre_bilinear_effect_size->second =
+@@ -1188,7 +1183,6 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+           last_effect = GuestOutputPaintEffect::kBilinearDither;
+         }
+         break;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case GuestOutputPaintEffect::kCasSharpen:
+         last_effect = GuestOutputPaintEffect::kCasSharpenDither;
+         break;
+@@ -1198,7 +1192,6 @@ Presenter::GuestOutputPaintFlow Presenter::GetGuestOutputPaintFlow(
+       case GuestOutputPaintEffect::kFsrRcas:
+         last_effect = GuestOutputPaintEffect::kFsrRcasDither;
+         break;
+-#endif
+       default:
+         break;
+     }
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 23645ef..6ad2a77 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -109,7 +109,6 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FfxVkGetDeviceProcAddrCompat(VkDevice d
+ namespace shaders {
+ #include "../shaders/vulkan_spirv/guest_output_bilinear_dither_ps.h"
+ #include "../shaders/vulkan_spirv/guest_output_bilinear_ps.h"
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+ #include "../shaders/vulkan_spirv/guest_output_ffx_cas_resample_dither_ps.h"
+ #include "../shaders/vulkan_spirv/guest_output_ffx_cas_resample_ps.h"
+ #include "../shaders/vulkan_spirv/guest_output_ffx_cas_sharpen_dither_ps.h"
+@@ -117,7 +116,6 @@ namespace shaders {
+ #include "../shaders/vulkan_spirv/guest_output_ffx_fsr_easu_ps.h"
+ #include "../shaders/vulkan_spirv/guest_output_ffx_fsr_rcas_dither_ps.h"
+ #include "../shaders/vulkan_spirv/guest_output_ffx_fsr_rcas_ps.h"
+-#endif
+ #include "../shaders/vulkan_spirv/guest_output_triangle_strip_rect_vs.h"
+ }  // namespace shaders
+ 
+@@ -2027,19 +2025,16 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+           uint32_t effect_constants_size = 0;
+           union {
+             BilinearConstants bilinear;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+             CasSharpenConstants cas_sharpen;
+             CasResampleConstants cas_resample;
+             FsrEasuConstants fsr_easu;
+             FsrRcasConstants fsr_rcas;
+-#endif
+           } effect_constants;
+           switch (guest_output_paint_pipeline_layout_index) {
+             case kGuestOutputPaintPipelineLayoutIndexBilinear: {
+               effect_constants_size = sizeof(effect_constants.bilinear);
+               effect_constants.bilinear.Initialize(guest_output_flow, i);
+             } break;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+             case kGuestOutputPaintPipelineLayoutIndexCasSharpen: {
+               effect_constants_size = sizeof(effect_constants.cas_sharpen);
+               effect_constants.cas_sharpen.Initialize(guest_output_flow, i,
+@@ -2058,7 +2053,6 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+               effect_constants_size = sizeof(effect_constants.fsr_rcas);
+               effect_constants.fsr_rcas.Initialize(guest_output_flow, i, guest_output_paint_config);
+             } break;
+-#endif
+             default:
+               break;
+           }
+@@ -2334,7 +2328,6 @@ bool VulkanPresenter::InitializeSurfaceIndependent() {
+       case kGuestOutputPaintPipelineLayoutIndexBilinear:
+         guest_output_paint_push_constant_range_ffx.size = sizeof(BilinearConstants);
+         break;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case kGuestOutputPaintPipelineLayoutIndexCasSharpen:
+         guest_output_paint_push_constant_range_ffx.size = sizeof(CasSharpenConstants);
+         break;
+@@ -2347,7 +2340,6 @@ bool VulkanPresenter::InitializeSurfaceIndependent() {
+       case kGuestOutputPaintPipelineLayoutIndexFsrRcas:
+         guest_output_paint_push_constant_range_ffx.size = sizeof(FsrRcasConstants);
+         break;
+-#endif
+       default:
+         assert_unhandled_case(GuestOutputPaintPipelineLayoutIndex(i));
+         continue;
+@@ -2389,7 +2381,6 @@ bool VulkanPresenter::InitializeSurfaceIndependent() {
+         shader_module_create_info.codeSize = sizeof(shaders::guest_output_bilinear_dither_ps);
+         shader_module_create_info.pCode = shaders::guest_output_bilinear_dither_ps;
+         break;
+-#if defined(REX_HAS_FIDELITYFX_SDK)
+       case GuestOutputPaintEffect::kCasSharpen:
+         shader_module_create_info.codeSize = sizeof(shaders::guest_output_ffx_cas_sharpen_ps);
+         shader_module_create_info.pCode = shaders::guest_output_ffx_cas_sharpen_ps;
+@@ -2420,7 +2411,6 @@ bool VulkanPresenter::InitializeSurfaceIndependent() {
+         shader_module_create_info.codeSize = sizeof(shaders::guest_output_ffx_fsr_rcas_dither_ps);
+         shader_module_create_info.pCode = shaders::guest_output_ffx_fsr_rcas_dither_ps;
+         break;
+-#endif
+       default:
+         // Not supported by this implementation.
+         continue;
+-- 
+2.53.0.697.g625c4fb2daa
+

@@ -1,0 +1,98 @@
+From 8b13589c2060cc2b5d4e11ddd11be1d52119cdc9 Mon Sep 17 00:00:00 2001
+From: Ben Williams <213356824+q8itz@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 16:52:02 +0000
+Subject: [PATCH 3/9] audio: keep running without a playback device
+
+SDL audio init failures leave the driver registered and discard frames
+so guest XAudio initialisation still succeeds.
+---
+ include/rex/audio/sdl/sdl_audio_driver.h |  1 +
+ src/audio/sdl/sdl_audio_driver.cpp       | 24 ++++++++++++++++++------
+ 2 files changed, 19 insertions(+), 6 deletions(-)
+
+diff --git a/include/rex/audio/sdl/sdl_audio_driver.h b/include/rex/audio/sdl/sdl_audio_driver.h
+index f8949ca..067a9b0 100644
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -39,6 +39,7 @@ class SDLAudioDriver : public AudioDriver {
+ 
+   SDL_AudioStream* sdl_stream_ = nullptr;
+   bool sdl_initialized_ = false;
++  bool silent_ = false;
+   uint8_t sdl_device_channels_ = 0;
+ 
+   static const uint32_t frame_frequency_ = 48000;
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 20a2cd8..8640118 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -45,7 +45,10 @@ bool SDLAudioDriver::Initialize() {
+ 
+   if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+     REXAPU_ERROR("SDL_InitSubSystem(SDL_INIT_AUDIO) failed: {}", SDL_GetError());
+-    return false;
++    // No playback device. Stay registered and drop frames so guest XAudio
++    // init still succeeds.
++    silent_ = true;
++    return true;
+   }
+   sdl_initialized_ = true;
+ 
+@@ -59,13 +62,15 @@ bool SDLAudioDriver::Initialize() {
+                                           SDLCallback, this);
+   if (!sdl_stream_) {
+     REXAPU_ERROR("SDL_OpenAudioDeviceStream() failed: {}", SDL_GetError());
+-    return false;
++    silent_ = true;
++    return true;
+   }
+ 
+   SDL_AudioDeviceID sdl_device = SDL_GetAudioStreamDevice(sdl_stream_);
+   if (!sdl_device) {
+     REXAPU_ERROR("SDL_GetAudioStreamDevice() failed: {}", SDL_GetError());
+-    return false;
++    silent_ = true;
++    return true;
+   }
+ 
+   if (!SDL_GetAudioDeviceFormat(sdl_device, &obtained_spec, NULL)) {
+@@ -84,12 +89,14 @@ bool SDLAudioDriver::Initialize() {
+                                             SDLCallback, this);
+     if (!sdl_stream_) {
+       REXAPU_ERROR("SDL_OpenAudioDeviceStream() stereo fallback failed: {}", SDL_GetError());
+-      return false;
++      silent_ = true;
++      return true;
+     }
+     sdl_device = SDL_GetAudioStreamDevice(sdl_stream_);
+     if (!sdl_device) {
+       REXAPU_ERROR("SDL_GetAudioStreamDevice() failed after stereo fallback: {}", SDL_GetError());
+-      return false;
++      silent_ = true;
++      return true;
+     }
+   }
+ 
+@@ -103,13 +110,18 @@ bool SDLAudioDriver::Initialize() {
+ 
+   if (!SDL_ResumeAudioDevice(sdl_device)) {
+     REXAPU_ERROR("SDL_ResumeAudioDevice() failed: {}", SDL_GetError());
+-    return false;
++    silent_ = true;
++    return true;
+   }
+ 
+   return true;
+ }
+ 
+ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
++  if (silent_) {
++    semaphore_->Release(1, nullptr);
++    return;
++  }
+   const auto input_frame = memory_->TranslateVirtual<float*>(frame_ptr);
+   float* output_frame;
+   {
+-- 
+2.53.0.697.g625c4fb2daa
+

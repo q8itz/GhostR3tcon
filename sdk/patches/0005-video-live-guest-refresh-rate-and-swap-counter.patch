@@ -1,0 +1,103 @@
+From b94a459af80169144bf41d17be9832da26a5a7ca Mon Sep 17 00:00:00 2001
+From: Ben Williams <213356824+q8itz@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 17:17:19 +0000
+Subject: [PATCH 5/9] video: live guest refresh rate and swap counter
+
+- The vblank timer re-reads the guest video mode every tick, so
+  video_mode_refresh_rate applies while the title runs.
+- VdSwapCount() reports guest frames presented, for frame-rate display.
+---
+ include/rex/kernel/xboxkrnl/video.h    |  3 +++
+ src/graphics/graphics_system.cpp       | 14 +++++++++-----
+ src/kernel/xboxkrnl/xboxkrnl_video.cpp |  7 +++++++
+ src/ui/window.cpp                      |  2 +-
+ 4 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/include/rex/kernel/xboxkrnl/video.h b/include/rex/kernel/xboxkrnl/video.h
+index 0b9bd41..c7352d1 100644
+--- a/include/rex/kernel/xboxkrnl/video.h
++++ b/include/rex/kernel/xboxkrnl/video.h
+@@ -26,6 +26,9 @@ namespace rex::kernel::xboxkrnl {
+ 
+ void VdQueryVideoMode(system::X_VIDEO_MODE* video_mode);
+ 
++// Number of VdSwap calls (guest frames presented) since startup.
++uint64_t VdSwapCount();
++
+ // Register video variable exports (VdGlobalDevice, VdHSIOCalibrationLock, etc.)
+ // Must be called during kernel initialization before XEX modules are loaded.
+ void RegisterVideoExports(rex::runtime::ExportResolver* export_resolver,
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 043bd8e..171ffca 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -151,12 +151,15 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+   vsync_worker_running_ = true;
+   vsync_worker_thread_ = system::object_ref<system::XHostThread>(
+       new system::XHostThread(kernel_state_, 128 * 1024, 0, [this]() {
+-        system::X_VIDEO_MODE video_mode;
+-        kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+-        double refresh_rate_hz = std::max(1.0, double(float(video_mode.refresh_rate)));
+         uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
+-        uint64_t vsync_interval_ticks =
+-            std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
++        // Re-read every vblank so a refresh rate change applies in-game.
++        auto query_vsync_interval_ticks = [guest_tick_frequency]() {
++          system::X_VIDEO_MODE video_mode;
++          kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
++          double refresh_rate_hz = std::max(1.0, double(float(video_mode.refresh_rate)));
++          return std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
++        };
++        uint64_t vsync_interval_ticks = query_vsync_interval_ticks();
+         uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
+         // Each vblank fires at its own deadline. Polling with a 1 ms sleep and
+         // then firing every vblank that was already due delivers them late and
+@@ -182,6 +185,7 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+             break;
+           }
+           MarkVblank();
++          vsync_interval_ticks = query_vsync_interval_ticks();
+           interval_ticks = REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
+           next_vblank += interval_ticks;
+           if (current_time >= next_vblank) {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index 1254710..687857e 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -78,6 +78,8 @@ float GetConfiguredVideoModeRefreshRate() {
+   return float(refresh_rate_hz);
+ }
+ 
++std::atomic<uint64_t> g_vd_swap_count{0};
++
+ void WarnNoGpuEmulation(const char* export_name, std::atomic<bool>& warned) {
+   if (!warned.exchange(true)) {
+     REXKRNL_WARN("{}: no GPU emulation loaded (gpu_plugin not set); call ignored", export_name);
+@@ -518,6 +520,11 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
+   for (uint32_t i = offset; i < 64; i++) {
+     dwords[i] = xenos::MakePacketType2();
+   }
++  g_vd_swap_count.fetch_add(1, std::memory_order_relaxed);
++}
++
++uint64_t VdSwapCount() {
++  return g_vd_swap_count.load(std::memory_order_relaxed);
+ }
+ 
+ void RegisterVideoExports(rex::runtime::ExportResolver* export_resolver,
+diff --git a/src/ui/window.cpp b/src/ui/window.cpp
+index b4e045f..0c33fee 100644
+--- a/src/ui/window.cpp
++++ b/src/ui/window.cpp
+@@ -63,7 +63,7 @@ REXCVAR_DEFINE_STRING(resolution, "", "Display",
+ REXCVAR_DEFINE_DOUBLE(video_mode_refresh_rate, 60.0, "Display",
+                       "Guest video mode refresh rate in Hz")
+     .range(24.0, 240.0)
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+ namespace rex {
+ namespace ui {
+-- 
+2.53.0.697.g625c4fb2daa
+
