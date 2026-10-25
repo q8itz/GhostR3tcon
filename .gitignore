@@ -19,3 +19,5 @@ sdk/rexglue-sdk/
 packaging/AppDir/
 packaging/.cache/
 *.AppImage
+packaging/windows/
+*.zip

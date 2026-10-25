@@ -1,0 +1,44 @@
+From 9e3dde9bab40588b3199d2413b5da097c22365cd Mon Sep 17 00:00:00 2001
+From: Ben Williams <213356824+q8itz@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 20:56:41 +0000
+Subject: [PATCH] windows: include Windows SDK headers by their on-disk case
+
+The Windows SDK ships objbase.h and sdkddkver.h in lower case. Windows
+doesn't care, but a cross-build from Linux with a case-sensitive file system
+does.
+---
+ include/rex/ui/d3d12/d3d12_api.h | 2 +-
+ src/core/platform_win.h          | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/include/rex/ui/d3d12/d3d12_api.h b/include/rex/ui/d3d12/d3d12_api.h
+index d0e7252..971e63a 100644
+--- a/include/rex/ui/d3d12/d3d12_api.h
++++ b/include/rex/ui/d3d12/d3d12_api.h
+@@ -19,7 +19,7 @@
+ #define NOMINMAX
+ #endif
+ #include <windows.h>
+-#include <ObjBase.h>
++#include <objbase.h>
+ 
+ #include <DXProgrammableCapture.h>
+ #include <d3d12.h>
+diff --git a/src/core/platform_win.h b/src/core/platform_win.h
+index 22d6566..e39ff02 100644
+--- a/src/core/platform_win.h
++++ b/src/core/platform_win.h
+@@ -24,8 +24,8 @@
+ #include <windows.h>
+ #include <windowsx.h>
+ 
+-#include <ObjBase.h>
+-#include <SDKDDKVer.h>
++#include <objbase.h>
++#include <sdkddkver.h>
+ #include <bcrypt.h>
+ #include <dwmapi.h>
+ #include <shellapi.h>
+-- 
+2.53.0.697.g625c4fb2daa
+

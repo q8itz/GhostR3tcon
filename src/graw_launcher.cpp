@@ -39,17 +39,26 @@ std::string Trim(const char* text) {
   return s.substr(start, end - start + 1);
 }
 
+const char* HomeEnv() {
+#ifdef _WIN32
+  return std::getenv("USERPROFILE");
+#else
+  return std::getenv("HOME");
+#endif
+}
+
 std::filesystem::path ExpandHome(const std::string& path) {
   if (!path.empty() && path[0] == '~') {
-    if (const char* home = std::getenv("HOME")) {
-      return std::filesystem::path(home) / path.substr(path.size() > 1 && path[1] == '/' ? 2 : 1);
+    if (const char* home = HomeEnv()) {
+      return std::filesystem::path(home) /
+             path.substr(path.size() > 1 && (path[1] == '/' || path[1] == '\\') ? 2 : 1);
     }
   }
   return path;
 }
 
 std::filesystem::path HomeDir() {
-  const char* home = std::getenv("HOME");
+  const char* home = HomeEnv();
   return home ? std::filesystem::path(home) : std::filesystem::path("/");
 }
 
@@ -232,10 +241,18 @@ void LauncherDialog::DrawBrowser() {
   }
   ImGui::SameLine();
   place("Home", HomeDir());
+#ifdef _WIN32
+  // From C: so empty floppy drives aren't probed.
+  for (char drive = 'C'; drive <= 'Z'; ++drive) {
+    const char root[] = {drive, ':', '\\', '\0'};
+    place(root, root);
+  }
+#else
   place("/mnt", "/mnt");
   place("/media", "/media");
   place("/run/media", "/run/media");
   place("/", "/");
+#endif
   ImGui::NewLine();
 
   ImGui::SetNextItemWidth(-1.0f);

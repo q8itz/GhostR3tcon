@@ -1,6 +1,6 @@
 # GhostR3tcon
 
-A native Linux build of **Tom Clancy's Ghost Recon Advanced Warfighter** (Xbox 360),
+A native Linux and Windows build of **Tom Clancy's Ghost Recon Advanced Warfighter** (Xbox 360),
 made with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) static recompiler.
 
 This repository contains no game data. To build or play you need your own copy of
@@ -16,8 +16,9 @@ so other versions and regions are rejected with a clear message.
 | `src/` | The app: launcher, in-game menu, settings and startup hooks |
 | `graw_manifest.toml`, `*_hints.toml` | Codegen input: which executables to recompile and fixes for what the analyser misses |
 | `sdk/patches/` | Changes to ReXGlue SDK v0.10.0 that this game needs |
-| `scripts/` | SDK setup, game-file extraction and the build |
-| `packaging/` | AppImage packaging |
+| `scripts/` | SDK setup, game-file extraction and the Linux and Windows builds |
+| `cmake/` | Toolchain for cross-compiling the Windows build from Linux |
+| `packaging/` | AppImage and Windows zip packaging |
 
 ## Building
 
@@ -59,6 +60,27 @@ This writes `GhostR3tcon-x86_64.AppImage`, containing the recompiled code and th
 runtime. It holds no disc data, and the launcher asks for the disc image on first run.
 Settings are saved to `~/.config/graw/graw.toml`; saves and the shader cache go to
 `~/.local/share/graw`.
+
+## Windows
+
+The Windows build is cross-compiled from Linux with clang. On top of the Linux build's
+requirements you need lld and the LLVM tools (`sudo apt install lld llvm`). Then:
+
+```sh
+scripts/build-windows.sh "/path/to/Ghost Recon Advanced Warfighter.iso"
+packaging/build-windows-zip.sh
+```
+
+The first run downloads [xwin](https://github.com/Jake-Shadle/xwin) and uses it to fetch
+the MSVC C runtime and the Windows SDK into `~/.cache/graw-windows` (set `GRAW_WINDOWS_CACHE`
+to put them elsewhere); doing so accepts Microsoft's license for them. The Linux SDK is
+built as well, because codegen runs on the build machine. The game ends up in
+`out/build/win-amd64-release`, and the zip script packs it into `GhostR3tcon-windows-x64.zip`.
+
+The Windows build uses the Vulkan renderer, as on Linux. Players need a Vulkan driver and the
+[Microsoft Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe).
+Settings are saved to `graw.toml` next to `graw.exe`, so the folder must be writable; saves
+and the shader cache go to `Documents\graw`. It also runs under Wine with a Vulkan driver.
 
 ## Playing
 
