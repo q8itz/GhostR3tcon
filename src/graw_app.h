@@ -4,7 +4,12 @@
 
 #pragma once
 
+#include <filesystem>
+#include <memory>
+
 #include <rex/rex_app.h>
+
+#include "graw_launcher.h"
 
 class GrawApp : public rex::ReXApp {
  public:
@@ -18,17 +23,16 @@ class GrawApp : public rex::ReXApp {
 
   void OnPreSetup(rex::RuntimeConfig& config) override;
   void OnPostLoadXexImage() override;
+  void OnPostSetup() override;
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override;
+  void OnConfigureFonts(ImFontAtlas* atlas) override;
+  std::optional<rex::PathConfig> OnFinalizePaths(
+      const rex::PathConfig& defaults,
+      std::function<void(rex::PathConfig)> resume) override;
 
-  // Override virtual hooks for customization:
-  // void OnPostInitLogging() override {}
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
-  // void OnLoadXexImage(std::string& xex_image) override {}
-  // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
-  // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
-  // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
-  // std::unique_ptr<rex::ui::AchievementNotificationDialog>
-  // CreateAchievementNotificationDialog() override;
-  // void OnShutdown() override {}
-  // void OnConfigurePaths(rex::PathConfig& paths) override {}
+ private:
+  ImFont* ui_font_ = nullptr;
+  std::filesystem::path config_path_;
+  std::unique_ptr<graw::LauncherDialog> launcher_;
+  std::unique_ptr<graw::OptionsDialog> options_;
 };

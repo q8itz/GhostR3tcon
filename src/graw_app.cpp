@@ -2,25 +2,137 @@
 
 #include "graw_app.h"
 
+#include <chrono>
 #include <string>
 
+#include <imgui.h>
+
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
+#include <rex/input/input_system.h>
+#include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/string/utf8.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/user_module.h>
+#include <rex/ui/keybinds.h>
 
-REXCVAR_DEFINE_BOOL(boot_to_campaign, true, "GRAW",
-                    "Start Yeti_Final_Xenon.exe (Single Player) directly instead of the "
-                    "default.xex shell menu");
+#include "graw_settings.h"
+
+REXCVAR_DECLARE(std::string, game_data_root);
+REXCVAR_DECLARE(std::string, user_data_root);
 
 void GrawApp::OnPreSetup(rex::RuntimeConfig&) {
-  // The campaign simulates at 30 Hz. At the default 60 Hz, squad logic runs
-  // ahead of the frames and a few minutes in it reads a null object.
-  if (rex::cvar::GetFlagSource("video_mode_refresh_rate") == rex::cvar::Source::kDefault) {
-    rex::cvar::SetFlagByName("video_mode_refresh_rate", "30");
-    REXLOG_INFO("Guest display set to 30 Hz for the campaign");
+  graw::ApplyFrameRate();
+  rex::cvar::RegisterChangeCallback("graw_60fps",
+                                    [](std::string_view, std::string_view) {
+                                      graw::ApplyFrameRate();
+                                    });
+}
+
+void GrawApp::OnConfigureFonts(ImFontAtlas* atlas) {
+  for (const char* path : {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                           "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                           "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+                           "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                           "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"}) {
+    if (std::filesystem::exists(path)) {
+      ImFontConfig config;
+      config.OversampleH = 2;
+      ui_font_ = atlas->AddFontFromFileTTF(path, 32.0f, &config);
+      if (ui_font_) {
+        return;
+      }
+    }
+  }
+}
+
+void GrawApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
+  rex::ui::RegisterBind("bind_graw_options", "F6", "Toggle GRAW options", [this, drawer] {
+    if (launcher_) {
+      return;
+    }
+    if (options_) {
+      options_.reset();
+      return;
+    }
+    options_ = std::make_unique<graw::OptionsDialog>(drawer, ui_font_, config_path_, [this] {
+      app_context().CallInUIThreadDeferred([this] { options_.reset(); });
+    });
+  });
+
+  SetGuestFrameStats([] {
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point last_time = Clock::now();
+    static uint64_t last_count = rex::kernel::xboxkrnl::VdSwapCount();
+    static rex::ui::FrameStats stats;
+    auto now = Clock::now();
+    double elapsed = std::chrono::duration<double>(now - last_time).count();
+    if (elapsed >= 0.5) {
+      uint64_t count = rex::kernel::xboxkrnl::VdSwapCount();
+      uint64_t frames = count - last_count;
+      stats.fps = double(frames) / elapsed;
+      stats.frame_time_ms = frames ? elapsed * 1000.0 / double(frames) : 0.0;
+      stats.frame_count = count;
+      last_count = count;
+      last_time = now;
+    }
+    return stats;
+  });
+}
+
+std::optional<rex::PathConfig> GrawApp::OnFinalizePaths(
+    const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) {
+  config_path_ = defaults.config_path;
+  graw::ApplyWindowSize();
+
+  // The defaults are resolved before the config file loads; pick up the
+  // paths the launcher saved there.
+  rex::PathConfig paths = defaults;
+  if (!REXCVAR_GET(game_data_root).empty()) {
+    paths.game_data_root = REXCVAR_GET(game_data_root);
+  }
+  if (!REXCVAR_GET(user_data_root).empty()) {
+    paths.user_data_root = REXCVAR_GET(user_data_root);
+  }
+
+  std::error_code ec;
+  bool have_disc = !paths.game_data_root.empty() && std::filesystem::exists(paths.game_data_root, ec);
+  if ((!REXCVAR_GET(show_launcher) && have_disc) || !imgui_drawer()) {
+    return paths;
+  }
+
+  launcher_ = std::make_unique<graw::LauncherDialog>(
+      imgui_drawer(), ui_font_, config_path_, paths.game_data_root, paths.user_data_root,
+      rex::filesystem::GetUserFolder() / "graw",
+      [this, paths, resume](graw::LaunchChoice choice) mutable {
+        paths.game_data_root = choice.disc;
+        paths.user_data_root = choice.save_dir;
+        REXLOG_INFO("Launcher: disc {}, saves in {}", choice.disc.string(),
+                    choice.save_dir.string());
+        app_context().CallInUIThreadDeferred([this, paths, resume] {
+          launcher_.reset();
+          graw::ApplyFrameRate();
+          resume(paths);
+        });
+      },
+      [this] {
+        app_context().CallInUIThreadDeferred([this] {
+          launcher_.reset();
+          app_context().QuitFromUIThread();
+        });
+      });
+  return std::nullopt;
+}
+
+void GrawApp::OnPostSetup() {
+  // Keep mouse clicks on the options window from reaching the game.
+  auto* input = static_cast<rex::input::InputSystem*>(runtime()->input_system());
+  if (input && imgui_drawer()) {
+    input->SetActiveCallback([this] {
+      return !imgui_drawer()->HasDialogs() || !imgui_drawer()->GetIO().WantCaptureMouse;
+    });
   }
 }
 
