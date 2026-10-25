@@ -26,4 +26,4 @@ else()
     add_executable(graw ${GRAW_SOURCES})
 endif()
 
-rexglue_setup_target(graw)
+rexglue_setup_target(graw GPU_PLUGINS xenos)

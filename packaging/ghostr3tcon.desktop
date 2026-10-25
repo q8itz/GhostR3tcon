@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GhostR3tcon
+Comment=Ghost Recon Advanced Warfighter (Xbox 360) recompiled for Linux
+Exec=graw
+Icon=ghostr3tcon
+Categories=Game;
+Terminal=false
