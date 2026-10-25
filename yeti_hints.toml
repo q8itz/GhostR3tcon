@@ -16,6 +16,13 @@
 "0x822C43D8" = {}
 "0x823D3A10" = {}
 "0x823E2F90" = {}
+# Reached through function pointers and reported as unregistered calls. Each
+# starts where the previous function ends. One of them is on the path that
+# lets the player leave the helicopter at the start of the first mission.
+"0x821066E8" = {}
+"0x82107F78" = {}
+"0x82109908" = {}
+"0x8210AF58" = {}
 
 # HUD sprite blend modes in sub_821B8FF8. The bctr at 0x821B91DC indexes this
 # table with r7 (the signed blend-mode byte). Codegen switched on r8, which is
