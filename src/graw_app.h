@@ -4,12 +4,14 @@
 
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <memory>
 
 #include <rex/rex_app.h>
 
 #include "graw_launcher.h"
+#include "graw_menu.h"
 
 class GrawApp : public rex::ReXApp {
  public:
@@ -31,8 +33,13 @@ class GrawApp : public rex::ReXApp {
       std::function<void(rex::PathConfig)> resume) override;
 
  private:
+  void ToggleMenu();
+
   ImFont* ui_font_ = nullptr;
   std::filesystem::path config_path_;
   std::unique_ptr<graw::LauncherDialog> launcher_;
-  std::unique_ptr<graw::OptionsDialog> options_;
+  std::unique_ptr<graw::PadWatcher> pad_watcher_;
+  std::unique_ptr<graw::MenuDialog> menu_;
+  // Read by the guest's input threads.
+  std::atomic<bool> menu_open_{false};
 };

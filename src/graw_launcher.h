@@ -91,20 +91,4 @@ class LauncherDialog final : public rex::ui::ImGuiDialog {
   bool launched_ = false;
 };
 
-// In-game options window (toggled with F6) for settings that apply live.
-class OptionsDialog final : public rex::ui::ImGuiDialog {
- public:
-  OptionsDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font, std::filesystem::path config_path,
-                std::function<void()> on_close);
-
- protected:
-  void OnDraw(ImGuiIO& io) override;
-
- private:
-  ImFont* font_;
-  std::filesystem::path config_path_;
-  std::function<void()> on_close_;
-  std::string status_;
-};
-
 }  // namespace graw

@@ -15,6 +15,7 @@ set(GRAW_SOURCES
     src/main.cpp
     src/graw_app.cpp
     src/graw_launcher.cpp
+    src/graw_menu.cpp
     src/graw_settings.cpp
     src/sha1.cpp
 )

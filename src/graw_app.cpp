@@ -49,18 +49,7 @@ void GrawApp::OnConfigureFonts(ImFontAtlas* atlas) {
 }
 
 void GrawApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
-  rex::ui::RegisterBind("bind_graw_options", "F6", "Toggle GRAW options", [this, drawer] {
-    if (launcher_) {
-      return;
-    }
-    if (options_) {
-      options_.reset();
-      return;
-    }
-    options_ = std::make_unique<graw::OptionsDialog>(drawer, ui_font_, config_path_, [this] {
-      app_context().CallInUIThreadDeferred([this] { options_.reset(); });
-    });
-  });
+  rex::ui::RegisterBind("bind_graw_options", "F6", "Toggle GRAW menu", [this] { ToggleMenu(); });
 
   SetGuestFrameStats([] {
     using Clock = std::chrono::steady_clock;
@@ -126,12 +115,37 @@ std::optional<rex::PathConfig> GrawApp::OnFinalizePaths(
   return std::nullopt;
 }
 
+void GrawApp::ToggleMenu() {
+  if (launcher_ || !imgui_drawer()) {
+    return;
+  }
+  if (menu_) {
+    menu_->Close();
+    return;
+  }
+  menu_ = std::make_unique<graw::MenuDialog>(
+      imgui_drawer(), ui_font_, config_path_, pad_watcher_.get(),
+      [this] {
+        app_context().CallInUIThreadDeferred([this] {
+          menu_.reset();
+          menu_open_ = false;
+        });
+      },
+      [this] { app_context().CallInUIThreadDeferred([this] { app_context().QuitFromUIThread(); }); });
+  menu_open_ = true;
+}
+
 void GrawApp::OnPostSetup() {
-  // Keep mouse clicks on the options window from reaching the game.
+  pad_watcher_ = std::make_unique<graw::PadWatcher>(
+      [this] { app_context().CallInUIThreadDeferred([this] { ToggleMenu(); }); });
+
+  // The game gets no input while the menu is open, and none from mouse clicks
+  // on other overlays.
   auto* input = static_cast<rex::input::InputSystem*>(runtime()->input_system());
   if (input && imgui_drawer()) {
     input->SetActiveCallback([this] {
-      return !imgui_drawer()->HasDialogs() || !imgui_drawer()->GetIO().WantCaptureMouse;
+      return !menu_open_ &&
+             (!imgui_drawer()->HasDialogs() || !imgui_drawer()->GetIO().WantCaptureMouse);
     });
   }
 }

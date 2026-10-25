@@ -621,43 +621,4 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   ImGui::End();
 }
 
-OptionsDialog::OptionsDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font,
-                             std::filesystem::path config_path, std::function<void()> on_close)
-    : ImGuiDialog(drawer),
-      font_(font),
-      config_path_(std::move(config_path)),
-      on_close_(std::move(on_close)) {}
-
-void OptionsDialog::OnDraw(ImGuiIO& io) {
-  const float font_size = std::clamp(io.DisplaySize.y / 48.0f, 14.0f, 32.0f);
-  ImGui::PushFont(font_, font_size);
-  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                          ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowBgAlpha(0.92f);
-  bool open = true;
-  if (ImGui::Begin("GRAW options (F6)", &open,
-                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
-                       ImGuiWindowFlags_NoSavedSettings)) {
-    DrawDisplayOptions(true);
-    ImGui::Separator();
-    if (ImGui::Button("Save")) {
-      SaveSettings(config_path_);
-      status_ = "Saved to " + config_path_.filename().string();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Close")) {
-      open = false;
-    }
-    if (!status_.empty()) {
-      ImGui::SameLine();
-      ImGui::TextDisabled("%s", status_.c_str());
-    }
-  }
-  ImGui::End();
-  ImGui::PopFont();
-  if (!open) {
-    on_close_();
-  }
-}
-
 }  // namespace graw
