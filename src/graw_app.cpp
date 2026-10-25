@@ -49,6 +49,8 @@ void GrawApp::OnConfigureFonts(ImFontAtlas* atlas) {
 }
 
 void GrawApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
+  // The app name stays "graw" because it also names the config file and data folder.
+  window()->SetTitle("GhostR3ton");
   rex::ui::RegisterBind("bind_graw_options", "F6", "Toggle GRAW menu", [this] { ToggleMenu(); });
 
   SetGuestFrameStats([] {
